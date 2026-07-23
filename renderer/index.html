@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+  <title>PCM Parser</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">PCM&nbsp;Parser</div>
+    <button id="open-btn" class="btn primary">Open PCM files…</button>
+    <div class="defaults">
+      <span class="muted">Defaults for new files:</span>
+      <label>Format <select id="def-format"></select></label>
+      <label>Channels <input id="def-channels" class="num" type="number" min="1" max="64" value="1" /></label>
+      <label>Sample rate <input id="def-sr" class="num wide" type="number" min="1" value="48000" /></label>
+      <label>Header bytes <input id="def-header" class="num" type="number" min="0" value="0" /></label>
+    </div>
+  </header>
+
+  <div class="specbar">
+    <span class="specbar-title">Spectrogram</span>
+    <label>Window <select id="spec-window"></select></label>
+    <label>Size <select id="spec-size"></select></label>
+    <label>Overlap <select id="spec-overlap"></select></label>
+    <label>Scale <select id="spec-scale"></select></label>
+    <label>Freq min <input id="spec-fmin" class="num wide" type="number" min="0" value="0" /> Hz</label>
+    <label>Freq max <input id="spec-fmax" class="num wide" type="number" min="0" placeholder="auto" /> Hz</label>
+    <label>dB min <input id="spec-dbmin" class="num" type="number" value="-100" /></label>
+    <label>dB max <input id="spec-dbmax" class="num" type="number" value="-10" /></label>
+    <span class="muted small specbar-hint">Applies to all open spectrograms</span>
+  </div>
+
+  <main class="layout">
+    <section id="files" class="files"></section>
+
+    <aside class="sidebar">
+      <h2>N-channel export</h2>
+      <p class="muted small">Tick channels in any file to add them. Order below = output channel order.</p>
+      <div id="export-count" class="muted">0 channels selected</div>
+      <div id="export-list" class="export-list"></div>
+      <div id="export-warn" class="warn hidden"></div>
+      <div class="export-opts">
+        <label>Sample rate <input id="export-sr" class="num wide" type="number" min="1" value="48000" /></label>
+        <label>Bit depth
+          <select id="export-depth">
+            <option value="16">16-bit PCM</option>
+            <option value="24">24-bit PCM</option>
+            <option value="32">32-bit PCM</option>
+            <option value="f32">32-bit float</option>
+          </select>
+        </label>
+      </div>
+      <div class="preview-box">
+        <div class="preview-head">
+          <button id="preview-btn" class="btn small primary" disabled>▶ Preview mix</button>
+          <span id="preview-time" class="time small">0:00.00 / 0:00.00</span>
+        </div>
+        <div id="preview-bar" class="preview-bar"><div id="preview-prog" class="preview-prog"></div></div>
+        <div id="preview-info" class="muted small">Select channels to preview</div>
+      </div>
+
+      <button id="export-btn" class="btn primary full" disabled>Export WAV</button>
+
+      <div class="export-after">
+        <label class="save-row">
+          <span class="muted small">Save as</span>
+          <input id="export-name" class="fname-input" type="text" spellcheck="false" value="export_0ch.wav" />
+        </label>
+        <div class="recent-row">
+          <span class="muted small">Recent save path</span>
+          <div id="export-recent" class="path-box muted small" title="">—</div>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="statusbar">
+    <span id="status" class="muted"></span>
+  </footer>
+
+  <div id="drop-overlay">
+    <div class="drop-inner">
+      <div class="drop-icon">⬇</div>
+      <div class="drop-text">Drop PCM files to open</div>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

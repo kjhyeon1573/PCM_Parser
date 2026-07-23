@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Generated test data (regenerate with: node tools/gen-test-pcm.js)
+samples/
+
+# Logs
+npm-debug.log*
+*.log
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
