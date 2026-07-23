@@ -4,7 +4,8 @@ import { FFT } from './fft.js';
 import { makeWindow } from './windows.js';
 import { scaleForward, scaleInverse, effectiveFMin, freqTicks, formatHz } from './scales.js';
 
-// Layout of the spectrogram canvas (device pixels).
+// Layout of the spectrogram canvas (device pixels). Kept equal to the
+// waveform's gutters so the two plots line up in "Both" mode.
 export const LEFT_GUTTER = 46;
 export const BOTTOM_GUTTER = 18;
 
@@ -13,7 +14,6 @@ export const BOTTOM_GUTTER = 18;
  * Recompute only when the window, size, overlap, or signal changes.
  *
  * @returns {{ mags: Float32Array, cols: number, bins: number, fftSize: number, hop: number }}
- *          mags is laid out [col * bins + bin] in dBFS (0 dB = full-scale tone).
  */
 export function computeSpectrogramMatrix(data, opts = {}) {
   const fftSize = opts.fftSize || 1024;
@@ -33,7 +33,7 @@ export function computeSpectrogramMatrix(data, opts = {}) {
   const re = new Float32Array(fftSize);
   const im = new Float32Array(fftSize);
   const mags = new Float32Array(cols * bins);
-  const norm = 2 / (sum || 1); // coherent-gain normalization → dBFS
+  const norm = 2 / (sum || 1);
 
   for (let c = 0; c < cols; c++) {
     const off = c * hop;
@@ -52,38 +52,30 @@ export function computeSpectrogramMatrix(data, opts = {}) {
 }
 
 /**
- * Render a magnitude matrix onto a canvas with a chosen frequency scale,
- * frequency range, and dB range — including frequency (left) and time (bottom) axes.
+ * Build the frequency-mapped spectrogram image. This depends on the matrix,
+ * frequency scale/range and dB range — but NOT on the time window, so panning
+ * and zooming in time only needs a cheap re-crop (see paintSpectrogram).
+ *
+ * @returns {{ off, plotH, cols, hop, scale, fMin, fMax, sMin, sMax }}
  */
-export function renderSpectrogram(canvas, matrix, opts = {}) {
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
-  const plotX = LEFT_GUTTER, plotY = 0;
-  const plotW = Math.max(1, W - LEFT_GUTTER);
-  const plotH = Math.max(1, H - BOTTOM_GUTTER);
-
+export function buildSpectrogramImage(matrix, opts = {}) {
   const sampleRate = opts.sampleRate || 48000;
   const scale = opts.scale || 'linear';
   const dbMin = opts.dbMin ?? -100;
   const dbMax = opts.dbMax ?? -10;
-  const durationSec = opts.durationSec || 0;
+  const canvasHeight = opts.canvasHeight || 200;
+  const plotH = Math.max(1, canvasHeight - BOTTOM_GUTTER);
   const nyquist = sampleRate / 2;
 
   let fMin = effectiveFMin(scale, opts.fMin ?? 0, nyquist);
   let fMax = opts.fMax > 0 ? Math.min(opts.fMax, nyquist) : nyquist;
   if (fMax <= fMin) { fMin = effectiveFMin(scale, 0, nyquist); fMax = nyquist; }
 
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, W, H);
-
   const bins = matrix.bins;
   const sMax = scaleForward(scale, fMax);
   const sMin = scaleForward(scale, fMin);
   const dbSpan = (dbMax - dbMin) || 1;
 
-  // Build an offscreen image of cols × plotH by mapping each output row to a
-  // frequency (per scale) and interpolating the matrix bins.
   const img = new ImageData(matrix.cols, plotH);
   const px = img.data;
   const denomRow = plotH - 1 || 1;
@@ -108,11 +100,52 @@ export function renderSpectrogram(canvas, matrix, opts = {}) {
   const off = document.createElement('canvas');
   off.width = matrix.cols; off.height = plotH;
   off.getContext('2d').putImageData(img, 0, 0);
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(off, 0, 0, matrix.cols, plotH, plotX, plotY, plotW, plotH);
 
-  drawFreqAxis(ctx, { scale, fMin, fMax, sMin, sMax, plotX, plotH, denomRow });
-  drawTimeAxis(ctx, { durationSec, plotX, plotW, plotH, W });
+  return { off, plotH, cols: matrix.cols, hop: matrix.hop, scale, fMin, fMax, sMin, sMax };
+}
+
+/**
+ * Paint a prebuilt spectrogram image onto a canvas, cropped to a time window
+ * [viewStart, viewEnd) (samples), with frequency (left) and time (bottom) axes.
+ */
+export function paintSpectrogram(canvas, image, opts = {}) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const plotX = LEFT_GUTTER;
+  const plotW = Math.max(1, W - LEFT_GUTTER);
+  const plotH = image.plotH;
+  const sampleRate = opts.sampleRate || 48000;
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  const hop = image.hop || 1;
+  const totalSamples = image.cols * hop;
+  const vStart = Math.max(0, opts.viewStart ?? 0);
+  const vEnd = Math.min(totalSamples, opts.viewEnd ?? totalSamples);
+  let colStart = vStart / hop;
+  let colEnd = vEnd / hop;
+  if (colEnd <= colStart) colEnd = colStart + 1e-3;
+  colStart = Math.max(0, Math.min(image.cols, colStart));
+  colEnd = Math.max(colStart + 1e-3, Math.min(image.cols, colEnd));
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(image.off, colStart, 0, colEnd - colStart, plotH, plotX, 0, plotW, plotH);
+
+  drawFreqAxis(ctx, { scale: image.scale, fMin: image.fMin, fMax: image.fMax, sMin: image.sMin, sMax: image.sMax, plotX, plotH, denomRow: plotH - 1 || 1 });
+  drawTimeAxis(ctx, { startSec: vStart / sampleRate, durSec: (vEnd - vStart) / sampleRate, plotX, plotW, plotH, W });
+}
+
+/** Convenience: build + paint in one call (full time view). Used by tests. */
+export function renderSpectrogram(canvas, matrix, opts = {}) {
+  const image = buildSpectrogramImage(matrix, { ...opts, canvasHeight: canvas.height });
+  const totalSamples = matrix.cols * matrix.hop;
+  paintSpectrogram(canvas, image, {
+    sampleRate: opts.sampleRate,
+    viewStart: opts.viewStart ?? 0,
+    viewEnd: opts.viewEnd ?? totalSamples
+  });
 }
 
 function drawFreqAxis(ctx, o) {
@@ -129,7 +162,6 @@ function drawFreqAxis(ctx, o) {
     ctx.moveTo(o.plotX, row + 0.5);
     ctx.lineTo(ctx.canvas.width, row + 0.5);
     ctx.stroke();
-    // label with a small dark backing for legibility
     const label = formatHz(f);
     const y = Math.min(o.plotH - 6, Math.max(6, row));
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
@@ -138,14 +170,12 @@ function drawFreqAxis(ctx, o) {
     ctx.textAlign = 'right';
     ctx.fillText(label, o.plotX - 5, y);
   }
-  // axis unit
   ctx.fillStyle = 'rgba(160,170,185,0.9)';
   ctx.textAlign = 'left';
   ctx.fillText('Hz', 3, 8);
 }
 
 function drawTimeAxis(ctx, o) {
-  if (!o.durationSec) return;
   ctx.font = '10px system-ui, sans-serif';
   ctx.fillStyle = 'rgba(200,206,216,0.9)';
   ctx.textBaseline = 'top';
@@ -153,10 +183,10 @@ function drawTimeAxis(ctx, o) {
   for (let i = 0; i <= n; i++) {
     const frac = i / n;
     const x = o.plotX + frac * o.plotW;
-    const tsec = frac * o.durationSec;
+    const tsec = o.startSec + frac * o.durSec;
     ctx.textAlign = i === 0 ? 'left' : i === n ? 'right' : 'center';
     const xx = i === 0 ? o.plotX + 2 : i === n ? o.W - 2 : x;
-    ctx.fillText(tsec.toFixed(2) + 's', xx, o.plotH + 3);
+    ctx.fillText(tsec.toFixed(o.durSec < 1 ? 3 : 2) + 's', xx, o.plotH + 3);
   }
 }
 

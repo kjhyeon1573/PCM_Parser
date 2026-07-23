@@ -17,6 +17,12 @@
       <label>Channels <input id="def-channels" class="num" type="number" min="1" max="64" value="1" /></label>
       <label>Sample rate <input id="def-sr" class="num wide" type="number" min="1" value="48000" /></label>
       <label>Header bytes <input id="def-header" class="num" type="number" min="0" value="0" /></label>
+      <span class="preset-group">
+        <label>Preset <select id="preset-select"></select></label>
+        <input id="preset-name" class="preset-name" type="text" placeholder="name (optional)" />
+        <button id="preset-save" class="btn small" title="Save current settings as a preset">+</button>
+        <button id="preset-del" class="btn small ghost" title="Delete selected preset">✕</button>
+      </span>
     </div>
   </header>
 

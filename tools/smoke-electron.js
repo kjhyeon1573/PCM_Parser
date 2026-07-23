@@ -58,7 +58,8 @@ app.whenReady().then(async () => {
       specScaleOptions: document.getElementById('spec-scale')?.options.length || 0,
       hasSpecRange: !!document.getElementById('spec-fmax') && !!document.getElementById('spec-dbmin'),
       hasPreview: !!document.getElementById('preview-btn') && !!document.getElementById('preview-bar'),
-      previewDisabled: document.getElementById('preview-btn')?.disabled
+      previewDisabled: document.getElementById('preview-btn')?.disabled,
+      hasPresets: !!document.getElementById('preset-select') && !!document.getElementById('preset-save') && !!document.getElementById('preset-name')
     }))()`);
   } catch (err) {
     errors.push('probe threw: ' + err.message);
@@ -75,6 +76,7 @@ app.whenReady().then(async () => {
   if (!probe || !probe.hasSpecRange) errors.push('spectrogram range inputs missing');
   if (!probe || !probe.hasPreview) errors.push('mixed preview controls missing');
   if (!probe || probe.previewDisabled !== true) errors.push('preview button should start disabled (no selection)');
+  if (!probe || !probe.hasPresets) errors.push('preset controls missing');
 
   // Exercise the real STFT + render pipeline across every frequency scale.
   let render;
@@ -141,6 +143,39 @@ app.whenReady().then(async () => {
     if (!(wfr.lit > 100)) errors.push('waveform produced too few lit pixels: ' + wfr.lit);
     if (!(wfr.amber > 20)) errors.push('envelope overlay produced too few pixels: ' + wfr.amber);
     if (!(wfr.litZoom > 100)) errors.push('zoomed waveform produced too few lit pixels: ' + wfr.litZoom);
+  }
+
+  // Exercise the split spectrogram pipeline: build image once, paint full,
+  // paint a time-cropped window, and build a frequency-zoomed image.
+  let sx;
+  try {
+    sx = await win.webContents.executeJavaScript(`(async () => {
+      const mod = await import('./spectrogram.js');
+      const N = 16000, SR = 48000, F = 3000;
+      const sig = new Float32Array(N);
+      for (let i = 0; i < N; i++) sig[i] = 0.8 * Math.sin(2 * Math.PI * F * i / SR);
+      const m = mod.computeSpectrogramMatrix(sig, { windowType: 'hann', fftSize: 1024, overlap: 0.75 });
+      const total = m.cols * m.hop;
+      const c = document.createElement('canvas'); c.width = 500; c.height = 200;
+      const count = () => { const d = c.getContext('2d').getImageData(mod.LEFT_GUTTER, 0, 400, 180).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i]+d[i+1]+d[i+2] > 40) n++; return n; };
+      const full = mod.buildSpectrogramImage(m, { sampleRate: SR, scale: 'linear', fMin: 0, fMax: 0, dbMin: -100, dbMax: -10, canvasHeight: 200 });
+      mod.paintSpectrogram(c, full, { sampleRate: SR, viewStart: 0, viewEnd: total });
+      const litFull = count();
+      mod.paintSpectrogram(c, full, { sampleRate: SR, viewStart: total*0.25, viewEnd: total*0.5 });
+      const litCrop = count();
+      const zoom = mod.buildSpectrogramImage(m, { sampleRate: SR, scale: 'log', fMin: 1000, fMax: 6000, dbMin: -100, dbMax: -10, canvasHeight: 200 });
+      mod.paintSpectrogram(c, zoom, { sampleRate: SR, viewStart: 0, viewEnd: total });
+      const litFreqZoom = count();
+      return { litFull, litCrop, litFreqZoom };
+    })()`);
+  } catch (err) {
+    errors.push('spectrogram split probe threw: ' + err.message);
+  }
+  console.log('SPEC2:', JSON.stringify(sx));
+  if (sx) {
+    if (!(sx.litFull > 100)) errors.push('spectrogram build/paint full too few pixels: ' + sx.litFull);
+    if (!(sx.litCrop > 100)) errors.push('spectrogram time-crop too few pixels: ' + sx.litCrop);
+    if (!(sx.litFreqZoom > 100)) errors.push('spectrogram freq-zoom too few pixels: ' + sx.litFreqZoom);
   }
   if (!probe || probe.defFormatOptions < 5) errors.push('format dropdown not populated');
   if (!probe || !probe.status) errors.push('status not initialized');

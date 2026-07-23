@@ -36,6 +36,10 @@ body {
 .brand { font-weight: 700; letter-spacing: .5px; font-size: 15px; }
 .defaults { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .defaults label, .ctrls label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.preset-group { display: inline-flex; align-items: center; gap: 6px; padding-left: 10px; border-left: 1px solid var(--line); }
+.preset-group .btn { padding: 4px 9px; }
+.preset-name { background: #12151b; color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; font-size: 12px; width: 120px; }
+#preset-save { font-weight: 700; }
 
 /* ---- spectrogram settings bar ---- */
 .specbar {
@@ -121,13 +125,15 @@ input.num.wide { width: 74px; }
 .wf-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .wf-view { font-variant-numeric: tabular-nums; }
 .wf-hint { margin-left: auto; }
-.wf-wrap { position: relative; width: 100%; min-width: 0; height: 120px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; cursor: crosshair; touch-action: none; }
+.wf-wrap { position: relative; width: 100%; min-width: 0; height: 200px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; cursor: crosshair; touch-action: none; }
 .wf-base, .wf-overlay { position: absolute; inset: 0; width: 100%; height: 100%; max-width: 100%; display: block; }
 .wf-overlay { pointer-events: none; }
 
-.spec-wrap { position: relative; min-width: 0; }
-.spec-status { position: absolute; top: 6px; left: 50px; z-index: 2; background: rgba(0,0,0,0.6); padding: 2px 6px; border-radius: 4px; }
-canvas.spec { width: 100%; max-width: 100%; height: 260px; display: block; border: 1px solid var(--line); border-radius: 6px; background: #000; }
+.spec-wrap { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.spec-inner { position: relative; width: 100%; min-width: 0; height: 200px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #000; cursor: crosshair; touch-action: none; }
+.spec-status { position: absolute; top: 6px; left: 52px; z-index: 3; background: rgba(0,0,0,0.6); padding: 2px 6px; border-radius: 4px; }
+canvas.spec, .spec-overlay { position: absolute; inset: 0; width: 100%; height: 100%; max-width: 100%; display: block; }
+.spec-overlay { pointer-events: none; z-index: 2; }
 canvas.spec.dim { opacity: 0.5; }
 
 /* ---- export sidebar ---- */

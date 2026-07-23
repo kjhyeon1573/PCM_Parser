@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-07-23
+
+### Added
+- **Per-file playback plays only the checked channels** — unchecked channels are
+  muted; toggling a channel's checkbox updates the audio live (position preserved).
+  Playing with no channels checked shows a hint instead.
+- **Spectrogram click-to-seek** with a playback cursor overlay, matching the waveform.
+- **Linked time zoom/pan**: zooming or panning the time axis on either the waveform
+  or the spectrogram moves both together (shared per-file view).
+- **Vertical-axis zoom & pan** on each plot: scroll over the left axis to zoom about
+  its center, drag the left axis to pan — amplitude for the waveform, frequency for
+  the spectrogram — each with its own reset button (⟲ time / ⟲ amp / ⟲ freq).
+- **New-file setting presets**: save the current format/channels/sample-rate/header
+  as a named preset (＋), pick one from the list to apply, or delete it. Presets
+  persist across sessions (localStorage).
+
+### Changed
+- Waveform and spectrogram panels now share a unified height and aligned axis gutters.
+- Spectrogram rendering split into a cached frequency-mapped image plus a cheap
+  time-crop paint, so panning/zooming in time no longer recomputes the STFT.
+
+[1.1.0]: https://github.com/kjhyeon1573/PCM_Parser/releases/tag/v1.1.0
+
 ## [1.0.0] - 2026-07-23
 
 Initial release. A Windows/Electron GUI for inspecting raw (headerless) PCM

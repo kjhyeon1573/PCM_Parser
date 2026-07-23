@@ -1,17 +1,20 @@
 'use strict';
 
-// Axis gutters (device pixels): left = amplitude scale, bottom = time scale.
-export const WF_LEFT = 40;
-export const WF_BOTTOM = 16;
+// Axis gutters (device pixels). Kept equal to the spectrogram's gutters so the
+// two plots line up in "Both" mode. left = amplitude scale, bottom = time scale.
+export const WF_LEFT = 46;
+export const WF_BOTTOM = 18;
 
 /**
  * Draw a min/max peak waveform of a Float32 channel, zoomed to a sample window
- * [start, end), with amplitude (left) and time (bottom) axes, and an optional
- * Hilbert amplitude envelope overlay. One vertical min..max bar per pixel column.
+ * [start, end) (time) and an amplitude window [center-range, center+range]
+ * (vertical), with amplitude (left) and time (bottom) axes and an optional
+ * Hilbert amplitude envelope overlay.
  *
  * @param {HTMLCanvasElement} canvas
  * @param {Float32Array} data
- * @param {object} opts { start, end, sampleRate, color, background, envelope, envelopeColor }
+ * @param {object} opts { start, end, sampleRate, ampCenter, ampRange,
+ *                        color, background, envelope, envelopeColor }
  */
 export function drawWaveform(canvas, data, opts = {}) {
   const ctx = canvas.getContext('2d');
@@ -26,6 +29,12 @@ export function drawWaveform(canvas, data, opts = {}) {
   const start = Math.max(0, opts.start ?? 0);
   const end = Math.min(data ? data.length : 0, opts.end ?? (data ? data.length : 0));
   const sr = opts.sampleRate || 48000;
+  const center = opts.ampCenter ?? 0;
+  const range = opts.ampRange || 1;
+
+  // amplitude → y within the plot; k = (amp-center)/range in [-1,1] fills the plot
+  const yFor = (amp) => mid - ((amp - center) / range) * mid;
+  const clampY = (y) => (y < 0 ? 0 : y > plotH ? plotH : y);
 
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = opts.background || '#141821';
@@ -35,16 +44,18 @@ export function drawWaveform(canvas, data, opts = {}) {
   ctx.font = '9px system-ui, sans-serif';
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'right';
-  for (const amp of [1, 0.5, 0, -0.5, -1]) {
-    const y = mid - amp * mid;
-    ctx.strokeStyle = amp === 0 ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.08)';
+  const dec = range < 0.1 ? 3 : 2;
+  for (const k of [1, 0.5, 0, -0.5, -1]) {
+    const y = mid - k * mid;
+    const ampVal = center + k * range;
+    ctx.strokeStyle = k === 0 ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.08)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(plotX, y + 0.5);
     ctx.lineTo(w, y + 0.5);
     ctx.stroke();
     ctx.fillStyle = 'rgba(200,206,216,0.85)';
-    ctx.fillText(amp.toFixed(1), plotX - 4, Math.min(plotH - 5, Math.max(6, y)));
+    ctx.fillText(ampVal.toFixed(dec), plotX - 4, Math.min(plotH - 5, Math.max(6, y)));
   }
 
   if (data && end > start) {
@@ -58,7 +69,7 @@ export function drawWaveform(canvas, data, opts = {}) {
     for (let x = 0; x < plotW; x++) {
       const s0 = start + Math.floor(x * samplesPerPx);
       const s1 = Math.min(end, start + Math.floor((x + 1) * samplesPerPx));
-      let min = 1, max = -1;
+      let min = Infinity, max = -Infinity;
       if (s1 <= s0) {
         const v = data[Math.min(end - 1, s0)];
         min = max = v;
@@ -70,14 +81,14 @@ export function drawWaveform(canvas, data, opts = {}) {
         }
       }
       const px = plotX + x + 0.5;
-      const y1 = mid - max * mid;
-      const y2 = mid - min * mid;
+      const y1 = clampY(yFor(max));
+      const y2 = clampY(yFor(min));
       ctx.moveTo(px, y1);
       ctx.lineTo(px, Math.max(y2, y1 + 1));
     }
     ctx.stroke();
 
-    // ---- Hilbert amplitude envelope (mirrored around center) ----
+    // ---- Hilbert amplitude envelope (mirrored around amplitude 0) ----
     if (opts.envelope && opts.envelope.length) {
       const env = opts.envelope;
       const upper = new Float32Array(plotW);
@@ -92,17 +103,17 @@ export function drawWaveform(canvas, data, opts = {}) {
       const col = opts.envelopeColor || '#ffcf5c';
       ctx.fillStyle = 'rgba(255,207,92,0.13)';
       ctx.beginPath();
-      ctx.moveTo(plotX + 0.5, mid - upper[0] * mid);
-      for (let x = 1; x < plotW; x++) ctx.lineTo(plotX + x + 0.5, mid - upper[x] * mid);
-      for (let x = plotW - 1; x >= 0; x--) ctx.lineTo(plotX + x + 0.5, mid + upper[x] * mid);
+      ctx.moveTo(plotX + 0.5, clampY(yFor(upper[0])));
+      for (let x = 1; x < plotW; x++) ctx.lineTo(plotX + x + 0.5, clampY(yFor(upper[x])));
+      for (let x = plotW - 1; x >= 0; x--) ctx.lineTo(plotX + x + 0.5, clampY(yFor(-upper[x])));
       ctx.closePath();
       ctx.fill();
       ctx.strokeStyle = col;
       ctx.lineWidth = 1.25;
-      for (const sign of [-1, 1]) {
+      for (const sign of [1, -1]) {
         ctx.beginPath();
         for (let x = 0; x < plotW; x++) {
-          const y = mid + sign * upper[x] * mid;
+          const y = clampY(yFor(sign * upper[x]));
           if (x === 0) ctx.moveTo(plotX + x + 0.5, y); else ctx.lineTo(plotX + x + 0.5, y);
         }
         ctx.stroke();
