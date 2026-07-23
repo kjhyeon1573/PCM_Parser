@@ -185,6 +185,7 @@ function renderFile(file) {
 
   const applyBtn = el('button', { class: 'btn small', textContent: 'Apply' });
   const playBtn = el('button', { class: 'btn small primary', textContent: '▶ Play' });
+  const mixNote = el('span', { class: 'mix-note hidden' });
   const timeLabel = el('span', { class: 'time' });
   const info = el('span', { class: 'muted info' });
 
@@ -221,6 +222,7 @@ function renderFile(file) {
       el('label', {}, ['Header bytes ', hdrInput]),
       applyBtn,
       playBtn,
+      mixNote,
       timeLabel,
       info
     ])
@@ -237,9 +239,28 @@ function renderFile(file) {
   card._chWrap = chWrap;
   card._playBtn = playBtn;
   card._timeLabel = timeLabel;
+  card._mixNote = mixNote;
 
   filesEl().appendChild(card);
   rebuildChannels(file, info);
+  updateMixNote(file);
+}
+
+/** Show a red note when per-file playback will down-mix >2 checked channels to mono. */
+function updateMixNote(file) {
+  const note = file.dom && file.dom._mixNote;
+  if (!note) return;
+  const n = checkedChannels(file).length;
+  if (n > 2) {
+    note.textContent = `▶ ${n}ch → mono downmix`;
+    note.classList.remove('hidden');
+  } else {
+    note.classList.add('hidden');
+  }
+}
+
+function updateAllMixNotes() {
+  for (const f of state.files) updateMixNote(f);
 }
 
 function rebuildChannels(file, infoSpan, restore = null) {
@@ -730,19 +751,30 @@ function checkedKey(file) {
 }
 
 /**
- * Build the file's channels for playback with unchecked channels muted
- * (zero-filled) so only checked channels are audible. Null if none checked.
+ * Build the playback buffer channels from the checked channels only.
+ *
+ * We must NOT hand Web Audio an N-channel buffer with unchecked channels
+ * zero-filled: for channel counts without a defined speaker layout (3, 5, …)
+ * the "speakers" down-mix falls back to "discrete", which keeps only the first
+ * two channels and DROPS the rest — so e.g. the 3rd channel of a 3-ch file would
+ * be silent. Instead we pass only the checked channels: 1 → mono, 2 → stereo,
+ * and >2 are summed to mono so every checked channel is audible.
  */
-function audibleChannels(file) {
-  const checked = new Set(checkedChannels(file));
-  if (checked.size === 0) return null;
-  const zero = new Float32Array(file.parsed.frameCount);
-  return file.parsed.channels.map((data, ch) => (checked.has(ch) ? data : zero));
+function buildPlaybackChannels(file) {
+  const checked = checkedChannels(file);
+  if (checked.length === 0) return null;
+  const src = checked.map((ch) => file.parsed.channels[ch]);
+  if (src.length <= 2) return src; // mono / stereo → direct, no dropping
+  const N = file.parsed.frameCount;
+  const mono = new Float32Array(N);
+  const inv = 1 / src.length;
+  for (const c of src) for (let i = 0; i < c.length; i++) mono[i] += c[i] * inv;
+  return [mono];
 }
 
-/** Load a file's audible (checked-only) channels into the player. */
+/** Load a file's checked-only channels into the player. */
 function loadFileIntoPlayer(file) {
-  const chans = audibleChannels(file);
+  const chans = buildPlaybackChannels(file);
   if (!chans) return false;
   player.load(file.id, chans, file.settings.sampleRate);
   activeFileId = file.id;
@@ -989,6 +1021,7 @@ function updateExportPanel() {
   $('#export-count').textContent = `${count} channel${count === 1 ? '' : 's'} selected`;
   $('#export-btn').disabled = count === 0;
   updatePreviewControls();
+  updateAllMixNotes();
 
   // keep the suggested filename in sync with the channel count
   // until the user hand-edits it

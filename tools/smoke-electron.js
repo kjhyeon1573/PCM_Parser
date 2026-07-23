@@ -177,6 +177,41 @@ app.whenReady().then(async () => {
     if (!(sx.litCrop > 100)) errors.push('spectrogram time-crop too few pixels: ' + sx.litCrop);
     if (!(sx.litFreqZoom > 100)) errors.push('spectrogram freq-zoom too few pixels: ' + sx.litFreqZoom);
   }
+
+  // Verify the channel-mapping fix in the real audio engine (OfflineAudioContext):
+  // an N-channel buffer with data only in channel >=2 is dropped by the 3→2
+  // "discrete" down-mix, but a mono buffer of that data is audible.
+  let audio;
+  try {
+    audio = await win.webContents.executeJavaScript(`(async () => {
+      const SR = 48000, N = 4800;
+      const tone = new Float32Array(N);
+      for (let i = 0; i < N; i++) tone[i] = 0.5 * Math.sin(2 * Math.PI * 440 * i / SR);
+      async function renderMeanAbs(numCh, fillIndex) {
+        const ctx = new OfflineAudioContext(2, N, SR);
+        const buf = ctx.createBuffer(numCh, N, SR);
+        buf.copyToChannel(tone, fillIndex);
+        const s = ctx.createBufferSource(); s.buffer = buf; s.connect(ctx.destination); s.start();
+        const out = await ctx.startRendering();
+        let sum = 0, cnt = 0;
+        for (let c = 0; c < out.numberOfChannels; c++) { const o = out.getChannelData(c); for (let i = 0; i < N; i++) { sum += Math.abs(o[i]); cnt++; } }
+        return sum / cnt;
+      }
+      return {
+        threeChLast: await renderMeanAbs(3, 2),  // the reported bug: only ch2 has data
+        monoFix: await renderMeanAbs(1, 0),       // the fix: mono buffer of that data
+        stereoRight: await renderMeanAbs(2, 1)    // 2-ch direct path (data in R)
+      };
+    })()`);
+  } catch (err) {
+    errors.push('audio mapping probe threw: ' + err.message);
+  }
+  console.log('AUDIO:', JSON.stringify(audio));
+  if (audio) {
+    if (!(audio.threeChLast < 0.01)) errors.push('expected 3ch-last-channel to be dropped by downmix, got ' + audio.threeChLast);
+    if (!(audio.monoFix > 0.05)) errors.push('mono fix path is silent: ' + audio.monoFix);
+    if (!(audio.stereoRight > 0.05)) errors.push('stereo direct path is silent: ' + audio.stereoRight);
+  }
   if (!probe || probe.defFormatOptions < 5) errors.push('format dropdown not populated');
   if (!probe || !probe.status) errors.push('status not initialized');
 

@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-07-23
+
+### Fixed
+- **Multichannel playback dropped channels beyond the second.** Per-file playback
+  built an N-channel buffer with unchecked channels zero-filled; for channel
+  counts without a defined speaker layout (3, 5, …) the Web Audio "speakers"
+  down-mix falls back to "discrete", which keeps only the first two channels and
+  drops the rest — so e.g. only the last channel of a 3-channel file was silent.
+  Playback now uses only the checked channels (1 → mono, 2 → stereo, >2 → summed
+  to mono) so every checked channel is audible.
+
+### Added
+- A red **"▶ Nch → mono downmix"** note next to a file's Play button when more
+  than two of its channels are checked (playback is summed to mono).
+
+[1.1.1]: https://github.com/kjhyeon1573/PCM_Parser/releases/tag/v1.1.1
+
 ## [1.1.0] - 2026-07-23
 
 ### Added
