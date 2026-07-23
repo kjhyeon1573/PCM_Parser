@@ -9,6 +9,7 @@ import { FFT, hannWindow } from '../renderer/fft.js';
 import { makeWindow, WINDOWS } from '../renderer/windows.js';
 import { scaleForward, scaleInverse, freqTicks } from '../renderer/scales.js';
 import { computeSpectrogramMatrix } from '../renderer/spectrogram.js';
+import { hilbertEnvelope } from '../renderer/hilbert.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, '..');
@@ -154,6 +155,35 @@ console.log('== STFT matrix: peak bin tracks tone ==');
   const expectBin = Math.round((freq / (SR / 2)) * (m.bins - 1));
   near(best, expectBin, 2, `peak bin ~${expectBin} for ${freq}Hz`);
   ok(bestVal > -6, `peak level near 0 dBFS (got ${bestVal.toFixed(1)} dB)`);
+}
+
+console.log('== complex FFT in-place roundtrip ==');
+{
+  const fft = new FFT(8);
+  const re = Float32Array.from([1, 2, 3, 4, 5, 6, 7, 8]);
+  const im = new Float32Array(8);
+  const orig = Array.from(re);
+  fft.fftInPlace(re, im, false);
+  fft.fftInPlace(re, im, true);
+  let maxErr = 0;
+  for (let i = 0; i < 8; i++) maxErr = Math.max(maxErr, Math.abs(re[i] - orig[i]), Math.abs(im[i]));
+  ok(maxErr < 1e-3, `forward+inverse recovers input (max err ${maxErr.toExponential(2)})`);
+}
+
+console.log('== Hilbert envelope of a tone ==');
+{
+  const SR = 48000, N = 4096, A = 0.7, F = 1000;
+  const sig = new Float32Array(N);
+  for (let i = 0; i < N; i++) sig[i] = A * Math.sin((2 * Math.PI * F * i) / SR);
+  const env = hilbertEnvelope(sig);
+  ok(env.length === N, 'envelope length matches input');
+  // interior samples should sit near the tone amplitude
+  let sum = 0, cnt = 0;
+  for (let i = 500; i < N - 500; i++) { sum += env[i]; cnt++; }
+  near(sum / cnt, A, 0.03, 'interior envelope ~ amplitude');
+  // smoothing option returns same length and stays near amplitude
+  const sm = hilbertEnvelope(sig, { smooth: 96 });
+  near(sm[N / 2], A, 0.05, 'smoothed envelope ~ amplitude at center');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

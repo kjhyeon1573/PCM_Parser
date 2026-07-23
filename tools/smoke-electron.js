@@ -20,7 +20,9 @@ app.whenReady().then(async () => {
   });
 
   win.webContents.on('console-message', (_e, level, message) => {
-    // level 3 = error
+    // level 2 = warning, 3 = error. Ignore the benign getImageData perf hint
+    // (triggered by this test's own pixel readbacks, not the app).
+    if (/willReadFrequently/i.test(message)) return;
     if (level >= 2) errors.push(`[console ${level}] ${message}`);
   });
   win.webContents.on('did-fail-load', (_e, code, desc) => {
@@ -103,6 +105,42 @@ app.whenReady().then(async () => {
     for (const scale of ['linear', 'log', 'mel', 'bark']) {
       if (!(render[scale] > 100)) errors.push(`spectrogram render (${scale}) produced too few lit pixels: ${render[scale]}`);
     }
+  }
+
+  // Exercise the waveform + axes + Hilbert envelope render path (incl. zoom).
+  let wfr;
+  try {
+    wfr = await win.webContents.executeJavaScript(`(async () => {
+      const wf = await import('./waveform.js');
+      const hb = await import('./hilbert.js');
+      const N = 8000, SR = 48000;
+      const sig = new Float32Array(N);
+      for (let i = 0; i < N; i++) sig[i] = 0.6 * Math.sin(2 * Math.PI * 500 * i / SR);
+      const env = hb.hilbertEnvelope(sig, { smooth: 96 });
+      const c = document.createElement('canvas'); c.width = 600; c.height = 120;
+      wf.drawWaveform(c, sig, { start: 0, end: N, sampleRate: SR, envelope: env });
+      const d = c.getContext('2d').getImageData(wf.WF_LEFT, 0, 600 - wf.WF_LEFT, 104).data;
+      let lit = 0, amber = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        const r = d[i], g = d[i+1], b = d[i+2];
+        if (b > 80 && b > r) lit++;
+        if (r > 150 && g > 100 && b < 130) amber++;
+      }
+      // zoom to a sub-range must still render
+      wf.drawWaveform(c, sig, { start: 1000, end: 1200, sampleRate: SR });
+      const d2 = c.getContext('2d').getImageData(wf.WF_LEFT, 0, 600 - wf.WF_LEFT, 104).data;
+      let lit2 = 0;
+      for (let i = 0; i < d2.length; i += 4) if (d2[i+2] > 80 && d2[i+2] > d2[i]) lit2++;
+      return { lit, amber, litZoom: lit2, wfLeft: wf.WF_LEFT };
+    })()`);
+  } catch (err) {
+    errors.push('waveform render probe threw: ' + err.message);
+  }
+  console.log('WAVEFORM:', JSON.stringify(wfr));
+  if (wfr) {
+    if (!(wfr.lit > 100)) errors.push('waveform produced too few lit pixels: ' + wfr.lit);
+    if (!(wfr.amber > 20)) errors.push('envelope overlay produced too few pixels: ' + wfr.amber);
+    if (!(wfr.litZoom > 100)) errors.push('zoomed waveform produced too few lit pixels: ' + wfr.litZoom);
   }
   if (!probe || probe.defFormatOptions < 5) errors.push('format dropdown not populated');
   if (!probe || !probe.status) errors.push('status not initialized');

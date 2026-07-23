@@ -7,8 +7,11 @@ exporting selected channels from multiple files into a single N-channel WAV.
 - Open one or more raw PCM files at once — via the **Open** button or by **dragging files onto the window**
 - Per-file, user-selectable format: 8/16/24/32-bit signed/unsigned, 32/64-bit float, LE/BE, sample rate, channel count, and a header-bytes offset to skip
 - Handles both **mono-per-file** and **interleaved multichannel** files (auto-deinterleaved)
-- Per-channel **waveform** (min/max peak) with click-to-seek
-- **Preview playback** (play / pause / seek) via Web Audio
+- Per-channel **waveform** (min/max peak) with amplitude + time axes and click-to-seek
+  - **Zoom & pan**: mouse wheel zooms at the pointer, drag to pan, ± / Reset buttons; cursor and axes follow the zoom
+  - **Hilbert amplitude envelope** (RMS-like) overlay toggle
+  - Per-channel view mode: **Waveform / Spectrogram / Both**
+- **Preview playback** (play / pause / seek) via Web Audio, plus a **mixed N-channel preview** of the export selection
 - Per-channel **spectrogram** (STFT, magma colormap) on demand, with global controls:
   window type (Hann/Hamming/Blackman/Blackman-Harris/Bartlett/Flat-top/Rectangular),
   FFT/window size, overlap, frequency scale (**linear / log / mel / bark**),

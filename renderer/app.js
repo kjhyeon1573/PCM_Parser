@@ -1,12 +1,15 @@
 'use strict';
 
 import { FORMATS, parsePcm, channelStats } from './pcm.js';
-import { drawWaveform, drawCursor } from './waveform.js';
+import { drawWaveform, drawCursor, WF_LEFT, WF_BOTTOM } from './waveform.js';
 import { computeSpectrogramMatrix, renderSpectrogram } from './spectrogram.js';
+import { hilbertEnvelope } from './hilbert.js';
 import { WINDOWS } from './windows.js';
 import { SCALES } from './scales.js';
 import { Player } from './player.js';
 import { encodeWav } from './wav.js';
+
+const WF_HEIGHT = 120; // waveform canvas height (incl. axes gutters)
 
 const SPEC_HEIGHT = 260;
 
@@ -98,13 +101,15 @@ function makeFile(meta, buffer) {
     parsed: null,
     stats: [],
     dom: null,
-    channelDom: [] // per channel: { base, overlay, checkbox, specWrap, specCanvas }
+    view: { start: 0, end: 0 }, // per-file zoom window (samples), shared by all channels
+    channelDom: []
   };
 }
 
 function parseFile(file) {
   file.parsed = parsePcm(file.buffer, file.settings);
   file.stats = file.parsed.channels.map(channelStats);
+  file.view = { start: 0, end: file.parsed.frameCount }; // reset zoom to full
   // drop any export selections for channels that no longer exist
   state.exportOrder = state.exportOrder.filter(
     (e) => !(e.fileId === file.id && e.ch >= file.parsed.channels.length)
@@ -142,13 +147,13 @@ function flushResize() {
     if (!cd || target.clientWidth < 10) continue;
     const w = Math.max(200, target.clientWidth);
     if (target._kind === 'wf') {
-      if (cd.base.width === w) continue;         // width unchanged → skip
-      sizeCanvas(cd.base, 90);
-      sizeCanvas(cd.overlay, 90);
-      drawWaveform(cd.base, cd.data, { color: '#4ea1ff' });
+      if (!wfVisible(cd) || cd.base.width === w) continue; // unchanged/hidden → skip
+      sizeCanvas(cd.base, WF_HEIGHT);
+      sizeCanvas(cd.overlay, WF_HEIGHT);
+      drawChannelWaveform(cd);
       cursorsDirty = true;
     } else if (target._kind === 'spec') {
-      if (!cd.open || cd.specCanvas.width === w) continue;
+      if (!specVisible(cd) || cd.specCanvas.width === w) continue;
       sizeCanvas(cd.specCanvas, SPEC_HEIGHT);
       ensureMatrix(cd);
       renderChannelSpec(cd);
@@ -181,18 +186,20 @@ function renderFile(file) {
   const info = el('span', { class: 'muted info' });
 
   applyBtn.onclick = () => {
-    // remember which channels currently show a spectrogram so we can restore them
-    const openChannels = new Set(
-      file.channelDom.filter((cd) => cd.open).map((cd) => cd.ch)
-    );
+    // remember each channel's view mode + envelope state so we can restore them
+    const restore = { mode: new Map(), env: new Set() };
+    for (const cd of file.channelDom) {
+      restore.mode.set(cd.ch, cd.mode);
+      if (cd.envOn) restore.env.add(cd.ch);
+    }
     settings.format = formatSel.value;
     settings.channels = Math.max(1, parseInt(chInput.value) || 1);
     settings.sampleRate = Math.max(1, parseInt(srInput.value) || 48000);
     settings.headerBytes = Math.max(0, parseInt(hdrInput.value) || 0);
     parseFile(file);
     // signal changed → waveforms redraw and spectrograms recompute + re-render
-    // with the new sample-rate-aware Hz axis
-    rebuildChannels(file, info, openChannels);
+    // with the new sample-rate-aware axes
+    rebuildChannels(file, info, restore);
     updateExportPanel();
     if (activeFileId === file.id) { player.stop(); updatePlayButton(file, playBtn, timeLabel); }
   };
@@ -232,7 +239,7 @@ function renderFile(file) {
   rebuildChannels(file, info);
 }
 
-function rebuildChannels(file, infoSpan, reopenChannels = null) {
+function rebuildChannels(file, infoSpan, restore = null) {
   const chWrap = file.dom._chWrap;
   unobserveChannels(file);
   chWrap.innerHTML = '';
@@ -245,72 +252,254 @@ function rebuildChannels(file, infoSpan, reopenChannels = null) {
     (p.bytesDropped ? ` · ${p.bytesDropped} trailing bytes ignored` : '');
 
   p.channels.forEach((data, ch) => {
-    const checked = state.exportOrder.some((e) => e.fileId === file.id && e.ch === ch);
-    const checkbox = el('input', { type: 'checkbox', checked });
-    checkbox.onchange = () => toggleExport(file, ch, checkbox.checked);
-
-    const st = file.stats[ch];
-    const label = el('div', { class: 'ch-label' }, [
-      checkbox,
-      el('span', { textContent: ` Ch ${ch}` }),
-      el('span', { class: 'muted small', textContent: ` peak ${st.peak.toFixed(3)} rms ${st.rms.toFixed(3)}` })
-    ]);
-
-    const wfWrap = el('div', { class: 'wf-wrap' });
-    const base = el('canvas', { class: 'wf-base' });
-    const overlay = el('canvas', { class: 'wf-overlay' });
-    wfWrap.appendChild(base);
-    wfWrap.appendChild(overlay);
-
-    const specBtn = el('button', { class: 'btn tiny ghost', textContent: 'Spectrogram' });
-    const specWrap = el('div', { class: 'spec-wrap hidden' });
-    const specCanvas = el('canvas', { class: 'spec' });
-    specWrap.appendChild(specCanvas);
-
-    // per-channel spectrogram controller
-    const cd = {
-      base, overlay, checkbox, specWrap, specCanvas, specBtn, wfWrap,
-      data, file, ch,
-      open: false,
-      matrix: null,
-      matrixKey: ''
-    };
-    // observe containers so canvases track any size change
-    wfWrap._cd = cd; wfWrap._kind = 'wf';
-    specWrap._cd = cd; specWrap._kind = 'spec';
-    sizeObserver.observe(wfWrap);
-    sizeObserver.observe(specWrap);
-
-    specBtn.onclick = () => {
-      if (cd.open) closeChannelSpec(cd);
-      else openChannelSpec(cd);
-    };
-
-    const row = el('div', { class: 'ch-row' }, [
-      label,
-      wfWrap,
-      el('div', { class: 'ch-actions' }, [specBtn]),
-      specWrap
-    ]);
-    chWrap.appendChild(row);
-
-    // seek on waveform click
-    wfWrap.addEventListener('click', (ev) => {
-      const rect = wfWrap.getBoundingClientRect();
-      const pos = (ev.clientX - rect.left) / rect.width;
-      seekTo(file, pos);
-    });
-
+    const cd = buildChannelRow(file, data, ch, chWrap);
     file.channelDom.push(cd);
 
-    // draw after in DOM (needs clientWidth)
+    const restoreMode = restore && restore.mode.get(ch);
+    const restoreEnv = restore && restore.env.has(ch);
+
     requestAnimationFrame(() => {
-      sizeCanvas(base, 90);
-      sizeCanvas(overlay, 90);
-      drawWaveform(base, data, { color: '#4ea1ff' });
-      if (reopenChannels && reopenChannels.has(ch)) openChannelSpec(cd);
+      sizeCanvas(cd.base, WF_HEIGHT);
+      sizeCanvas(cd.overlay, WF_HEIGHT);
+      if (restoreEnv) enableEnvelope(cd, true);
+      drawChannelWaveform(cd);
+      if (restoreMode && restoreMode !== 'waveform') setChannelMode(cd, restoreMode);
     });
   });
+}
+
+function buildChannelRow(file, data, ch, chWrap) {
+  // ---- left side: checkbox, peak, rms, view-mode buttons ----
+  const checked = state.exportOrder.some((e) => e.fileId === file.id && e.ch === ch);
+  const checkbox = el('input', { type: 'checkbox', checked });
+  checkbox.onchange = () => toggleExport(file, ch, checkbox.checked);
+  const st = file.stats[ch];
+
+  const head = el('label', { class: 'ch-head' }, [checkbox, el('span', { textContent: ` Ch ${ch}` })]);
+  const peakLine = el('div', { class: 'ch-stat muted small', textContent: `peak ${st.peak.toFixed(3)}` });
+  const rmsLine = el('div', { class: 'ch-stat muted small', textContent: `rms ${st.rms.toFixed(3)}` });
+
+  const btnWf = el('button', { class: 'btn tiny ghost active', textContent: 'Waveform' });
+  const btnSpec = el('button', { class: 'btn tiny ghost', textContent: 'Spectrogram' });
+  const btnBoth = el('button', { class: 'btn tiny ghost', textContent: 'Both' });
+  const modes = el('div', { class: 'ch-modes' }, [btnWf, btnSpec, btnBoth]);
+
+  const side = el('div', { class: 'ch-side' }, [head, peakLine, rmsLine, modes]);
+
+  // ---- right side: waveform panel + spectrogram panel ----
+  const envBtn = el('button', { class: 'btn tiny ghost', textContent: 'RMS env' });
+  const zoomOut = el('button', { class: 'btn tiny ghost', textContent: '−' });
+  const zoomIn = el('button', { class: 'btn tiny ghost', textContent: '+' });
+  const zoomReset = el('button', { class: 'btn tiny ghost', textContent: 'Reset' });
+  const viewLabel = el('span', { class: 'muted small wf-view' });
+  const wfToolbar = el('div', { class: 'wf-toolbar' }, [
+    envBtn, zoomOut, zoomIn, zoomReset, viewLabel,
+    el('span', { class: 'muted small wf-hint', textContent: 'wheel: zoom · drag: pan' })
+  ]);
+
+  const wfWrap = el('div', { class: 'wf-wrap' });
+  const base = el('canvas', { class: 'wf-base' });
+  const overlay = el('canvas', { class: 'wf-overlay' });
+  wfWrap.appendChild(base);
+  wfWrap.appendChild(overlay);
+  const wfPanel = el('div', { class: 'wf-panel' }, [wfToolbar, wfWrap]);
+
+  const specStatus = el('div', { class: 'spec-status muted small hidden', textContent: 'Computing…' });
+  const specCanvas = el('canvas', { class: 'spec' });
+  const specWrap = el('div', { class: 'spec-wrap hidden' }, [specStatus, specCanvas]);
+
+  const main = el('div', { class: 'ch-main' }, [wfPanel, specWrap]);
+
+  const row = el('div', { class: 'ch-row' }, [side, main]);
+  chWrap.appendChild(row);
+
+  const cd = {
+    file, data, ch,
+    checkbox, base, overlay, wfWrap, wfPanel, viewLabel,
+    specWrap, specCanvas, specStatus,
+    btnWf, btnSpec, btnBoth, envBtn,
+    mode: 'waveform',
+    envOn: false, envelope: null, envKey: '',
+    matrix: null, matrixKey: '', specRendered: false
+  };
+
+  // view-mode buttons
+  btnWf.onclick = () => setChannelMode(cd, 'waveform');
+  btnSpec.onclick = () => setChannelMode(cd, 'spectrogram');
+  btnBoth.onclick = () => setChannelMode(cd, 'both');
+  envBtn.onclick = () => toggleEnvelope(cd);
+  zoomOut.onclick = () => zoomFile(file, 1 / 0.6);
+  zoomIn.onclick = () => zoomFile(file, 0.6);
+  zoomReset.onclick = () => resetZoom(file);
+
+  // observe for resizing
+  wfWrap._cd = cd; wfWrap._kind = 'wf';
+  specWrap._cd = cd; specWrap._kind = 'spec';
+  sizeObserver.observe(wfWrap);
+  sizeObserver.observe(specWrap);
+
+  setupWaveformInteraction(cd);
+  return cd;
+}
+
+// =======================================================================
+// Channel view mode (waveform / spectrogram / both)
+// =======================================================================
+function specVisible(cd) { return cd.mode === 'spectrogram' || cd.mode === 'both'; }
+function wfVisible(cd) { return cd.mode === 'waveform' || cd.mode === 'both'; }
+
+function setChannelMode(cd, mode) {
+  cd.mode = mode;
+  cd.btnWf.classList.toggle('active', mode === 'waveform');
+  cd.btnSpec.classList.toggle('active', mode === 'spectrogram');
+  cd.btnBoth.classList.toggle('active', mode === 'both');
+
+  cd.wfPanel.classList.toggle('hidden', !wfVisible(cd));
+  cd.specWrap.classList.toggle('hidden', !specVisible(cd));
+
+  if (wfVisible(cd)) {
+    requestAnimationFrame(() => {
+      sizeCanvas(cd.base, WF_HEIGHT);
+      sizeCanvas(cd.overlay, WF_HEIGHT);
+      drawChannelWaveform(cd);
+      drawAllCursors();
+    });
+  }
+  if (specVisible(cd)) showChannelSpec(cd);
+}
+
+// =======================================================================
+// Waveform drawing, zoom & interaction
+// =======================================================================
+function drawChannelWaveform(cd) {
+  const v = cd.file.view;
+  drawWaveform(cd.base, cd.data, {
+    start: v.start,
+    end: v.end,
+    sampleRate: cd.file.settings.sampleRate,
+    color: '#4ea1ff',
+    envelope: cd.envOn ? cd.envelope : null
+  });
+  updateViewLabel(cd);
+}
+
+function updateViewLabel(cd) {
+  const v = cd.file.view;
+  const sr = cd.file.settings.sampleRate;
+  cd.viewLabel.textContent = `${(v.start / sr).toFixed(3)}–${(v.end / sr).toFixed(3)}s`;
+}
+
+function redrawFileWaveforms(file) {
+  for (const cd of file.channelDom) {
+    if (wfVisible(cd)) drawChannelWaveform(cd);
+  }
+  drawAllCursors();
+}
+
+function clampView(file, start, end) {
+  const N = file.parsed.frameCount;
+  let len = Math.round(end - start);
+  len = Math.max(16, Math.min(N, len));
+  let s = Math.round(start);
+  if (s < 0) s = 0;
+  if (s + len > N) s = N - len;
+  if (s < 0) s = 0;
+  file.view.start = s;
+  file.view.end = s + len;
+}
+
+function zoomFile(file, factor, focusFrac = 0.5) {
+  const v = file.view;
+  const len = v.end - v.start;
+  const focus = v.start + focusFrac * len;
+  const newLen = len * factor;
+  clampView(file, focus - focusFrac * newLen, focus - focusFrac * newLen + newLen);
+  redrawFileWaveforms(file);
+}
+
+function resetZoom(file) {
+  file.view = { start: 0, end: file.parsed.frameCount };
+  redrawFileWaveforms(file);
+}
+
+function setupWaveformInteraction(cd) {
+  const file = cd.file;
+  const wfWrap = cd.wfWrap;
+
+  // wheel = zoom centered on the pointer (within the plot area, past the axis gutter)
+  wfWrap.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    const rect = wfWrap.getBoundingClientRect();
+    const plotW = Math.max(1, rect.width - WF_LEFT);
+    const frac = Math.min(1, Math.max(0, (ev.clientX - rect.left - WF_LEFT) / plotW));
+    zoomFile(file, ev.deltaY < 0 ? 0.8 : 1.25, frac);
+  }, { passive: false });
+
+  // drag = pan; a click without movement = seek
+  let drag = null;
+  wfWrap.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0) return;
+    const rect = wfWrap.getBoundingClientRect();
+    wfWrap.setPointerCapture(ev.pointerId);
+    drag = { x0: ev.clientX, width: Math.max(1, rect.width - WF_LEFT), v0: { ...file.view }, moved: false };
+  });
+  wfWrap.addEventListener('pointermove', (ev) => {
+    if (!drag) return;
+    const dx = ev.clientX - drag.x0;
+    if (Math.abs(dx) > 3) drag.moved = true;
+    const len = drag.v0.end - drag.v0.start;
+    const ds = -(dx / drag.width) * len;
+    clampView(file, drag.v0.start + ds, drag.v0.end + ds);
+    redrawFileWaveforms(file);
+  });
+  const endDrag = (ev) => {
+    if (!drag) return;
+    const wasDrag = drag.moved;
+    const rect = wfWrap.getBoundingClientRect();
+    drag = null;
+    if (!wasDrag) {
+      const plotW = Math.max(1, rect.width - WF_LEFT);
+      const frac = Math.min(1, Math.max(0, (ev.clientX - rect.left - WF_LEFT) / plotW));
+      const v = file.view;
+      const sample = v.start + frac * (v.end - v.start);
+      seekFileSeconds(file, sample / file.settings.sampleRate);
+    }
+  };
+  wfWrap.addEventListener('pointerup', endDrag);
+  wfWrap.addEventListener('pointercancel', () => { drag = null; });
+}
+
+// =======================================================================
+// Hilbert amplitude envelope (RMS-like overlay)
+// =======================================================================
+function envKeyFor(cd) { return String(cd.data.length); }
+
+function enableEnvelope(cd, on) {
+  cd.envOn = on;
+  cd.envBtn.classList.toggle('active', on);
+  if (on) {
+    const key = envKeyFor(cd);
+    if (!cd.envelope || cd.envKey !== key) {
+      const sr = cd.file.settings.sampleRate;
+      cd.envelope = hilbertEnvelope(cd.data, { smooth: Math.max(1, Math.round(sr * 0.002)) });
+      cd.envKey = key;
+    }
+  }
+}
+
+function toggleEnvelope(cd) {
+  const turnOn = !cd.envOn;
+  if (turnOn) {
+    cd.envBtn.textContent = '…';
+    setTimeout(() => {
+      enableEnvelope(cd, true);
+      cd.envBtn.textContent = 'RMS env';
+      if (wfVisible(cd)) drawChannelWaveform(cd);
+    }, 10);
+  } else {
+    enableEnvelope(cd, false);
+    if (wfVisible(cd)) drawChannelWaveform(cd);
+  }
 }
 
 // =======================================================================
@@ -333,7 +522,6 @@ function ensureMatrix(cd) {
 }
 
 function renderChannelSpec(cd) {
-  if (!cd.open) return;
   const dur = cd.file.parsed.frameCount / cd.file.settings.sampleRate;
   renderSpectrogram(cd.specCanvas, cd.matrix, {
     sampleRate: cd.file.settings.sampleRate,
@@ -346,47 +534,28 @@ function renderChannelSpec(cd) {
   });
 }
 
-function openChannelSpec(cd) {
-  cd.open = true;
-  cd.specWrap.classList.remove('hidden');
-  cd.specBtn.classList.add('active');
-  cd.specBtn.textContent = 'Computing…';
-  sizeCanvas(cd.specCanvas, SPEC_HEIGHT);
-  // compute asynchronously so the UI can paint the "computing" state
+/** Ensure the spectrogram is computed and rendered (async), then shown. */
+function showChannelSpec(cd, recompute) {
+  cd.specStatus.classList.remove('hidden');
+  cd.specCanvas.classList.add('dim');
+  if (recompute) cd.matrixKey = '';
   setTimeout(() => {
+    sizeCanvas(cd.specCanvas, SPEC_HEIGHT);
     ensureMatrix(cd);
     renderChannelSpec(cd);
-    cd.specBtn.textContent = 'Spectrogram';
+    cd.specRendered = true;
+    cd.specStatus.classList.add('hidden');
+    cd.specCanvas.classList.remove('dim');
   }, 10);
 }
 
-function closeChannelSpec(cd) {
-  cd.open = false;
-  cd.specWrap.classList.add('hidden');
-  cd.specBtn.classList.remove('active');
-}
-
-/** Re-render (and optionally recompute) every open spectrogram. */
+/** Re-render (and optionally recompute) every visible spectrogram. */
 function refreshAllSpectrograms(recompute) {
   for (const f of state.files) {
     for (const cd of f.channelDom) {
-      if (!cd.open) continue;
-      if (recompute) cd.matrixKey = ''; // force ensureMatrix to recompute
-      cd.specBtn.textContent = 'Computing…';
+      if (specVisible(cd)) showChannelSpec(cd, recompute);
     }
   }
-  // do the heavy work after the paint
-  setTimeout(() => {
-    for (const f of state.files) {
-      for (const cd of f.channelDom) {
-        if (!cd.open) continue;
-        sizeCanvas(cd.specCanvas, SPEC_HEIGHT);
-        ensureMatrix(cd);
-        renderChannelSpec(cd);
-        cd.specBtn.textContent = 'Spectrogram';
-      }
-    }
-  }, 10);
 }
 
 // =======================================================================
@@ -407,13 +576,13 @@ function togglePlay(file, btn, timeLabel) {
   updatePlayButton(file, btn, timeLabel);
 }
 
-function seekTo(file, pos) {
+function seekFileSeconds(file, seconds) {
   pausePreview();
   if (activeFileId !== file.id) {
     player.load(file.id, file.parsed.channels, file.settings.sampleRate);
     activeFileId = file.id;
   }
-  player.seek(pos * player.duration);
+  player.seek(seconds);
   if (!player.playing) drawAllCursors();
 }
 
@@ -448,10 +617,16 @@ function startCursorLoop() {
 function drawAllCursors() {
   const f = state.files.find((x) => x.id === activeFileId);
   if (!f || !f.parsed) return;
-  const pos = player.duration ? player.currentTime / player.duration : 0;
   clearCursors();
+  const sr = f.settings.sampleRate;
+  const curSample = player.currentTime * sr;
+  const v = f.view;
+  const len = v.end - v.start;
+  if (len <= 0) return;
+  const pos = (curSample - v.start) / len; // map to the current zoom window
+  if (pos < 0 || pos > 1) return;           // playhead outside the visible range
   for (const cd of f.channelDom) {
-    drawCursor(cd.overlay, pos);
+    if (wfVisible(cd)) drawCursor(cd.overlay, pos);
   }
 }
 

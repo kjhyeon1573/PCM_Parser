@@ -19,7 +19,12 @@ audio dumps and exporting selected channels to a single N-channel WAV.
   - Handles both **mono-per-file** and **interleaved multichannel** files
     (automatic deinterleaving).
 - **Waveform**
-  - Per-channel min/max peak waveform with click-to-seek.
+  - Per-channel min/max peak waveform with amplitude (left) and time (bottom) axes,
+    and click-to-seek.
+  - **Zoom & pan**: mouse wheel zooms at the pointer, drag to pan, and ± / Reset
+    buttons; the playback cursor and axes follow the zoom (shared across a file's channels).
+  - **Hilbert amplitude envelope** (RMS-like) overlay toggle per channel.
+  - Per-channel view mode: **Waveform / Spectrogram / Both**.
 - **Preview playback**
   - Per-file play / pause / seek via the Web Audio API, with a synced cursor.
   - **Mixed N-channel preview**: monitor the selected export channels

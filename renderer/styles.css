@@ -105,15 +105,30 @@ input.num.wide { width: 74px; }
 .close { position: absolute; right: 10px; top: 10px; }
 
 /* ---- channels ---- */
-.channels { padding: 8px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
-.ch-row { display: grid; grid-template-columns: 190px minmax(0, 1fr) auto; grid-template-rows: auto auto; gap: 8px 12px; align-items: center; }
-.ch-label { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.ch-actions { justify-self: end; }
-.wf-wrap { position: relative; width: 100%; min-width: 0; height: 90px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; cursor: crosshair; }
+.channels { padding: 8px 14px 14px; display: flex; flex-direction: column; gap: 14px; }
+.ch-row { display: flex; gap: 12px; align-items: flex-start; }
+
+/* left side: checkbox, peak, rms, view-mode buttons */
+.ch-side { width: 116px; flex: none; display: flex; flex-direction: column; gap: 3px; }
+.ch-head { display: flex; align-items: center; gap: 5px; font-weight: 600; }
+.ch-stat { line-height: 1.3; }
+.ch-modes { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.ch-modes .btn { width: 100%; text-align: center; }
+
+/* right side: waveform panel + spectrogram panel stacked */
+.ch-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.wf-panel { display: flex; flex-direction: column; gap: 4px; }
+.wf-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.wf-view { font-variant-numeric: tabular-nums; }
+.wf-hint { margin-left: auto; }
+.wf-wrap { position: relative; width: 100%; min-width: 0; height: 120px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; cursor: crosshair; touch-action: none; }
 .wf-base, .wf-overlay { position: absolute; inset: 0; width: 100%; height: 100%; max-width: 100%; display: block; }
 .wf-overlay { pointer-events: none; }
-.spec-wrap { grid-column: 1 / -1; min-width: 0; }
+
+.spec-wrap { position: relative; min-width: 0; }
+.spec-status { position: absolute; top: 6px; left: 50px; z-index: 2; background: rgba(0,0,0,0.6); padding: 2px 6px; border-radius: 4px; }
 canvas.spec { width: 100%; max-width: 100%; height: 260px; display: block; border: 1px solid var(--line); border-radius: 6px; background: #000; }
+canvas.spec.dim { opacity: 0.5; }
 
 /* ---- export sidebar ---- */
 .export-list { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }

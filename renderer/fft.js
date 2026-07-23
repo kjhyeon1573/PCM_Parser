@@ -53,6 +53,45 @@ export class FFT {
       }
     }
   }
+
+  /**
+   * In-place complex FFT / IFFT. re/im are modified in place (length = size).
+   * @param {Float32Array} re
+   * @param {Float32Array} im
+   * @param {boolean} inverse  true → inverse transform (with 1/N scaling)
+   */
+  fftInPlace(re, im, inverse) {
+    const n = this.size;
+    const rev = this.rev;
+    for (let i = 0; i < n; i++) {
+      const j = rev[i];
+      if (j > i) {
+        const tr = re[i]; re[i] = re[j]; re[j] = tr;
+        const ti = im[i]; im[i] = im[j]; im[j] = ti;
+      }
+    }
+    for (let len = 2; len <= n; len <<= 1) {
+      const half = len >> 1;
+      const step = n / len;
+      for (let i = 0; i < n; i += len) {
+        let k = 0;
+        for (let j = i; j < i + half; j++) {
+          const c = this.cos[k];
+          const s = inverse ? -this.sin[k] : this.sin[k];
+          const tre = re[j + half] * c - im[j + half] * s;
+          const tim = re[j + half] * s + im[j + half] * c;
+          re[j + half] = re[j] - tre;
+          im[j + half] = im[j] - tim;
+          re[j] += tre;
+          im[j] += tim;
+          k += step;
+        }
+      }
+    }
+    if (inverse) {
+      for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
+    }
+  }
 }
 
 /** Precomputed Hann window of a given length. */
