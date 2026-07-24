@@ -123,6 +123,21 @@ export function drawWaveform(canvas, data, opts = {}) {
       }
     }
 
+    // ---- selection band (analysis region) ----
+    if (opts.selection) {
+      const a = Math.max(start, opts.selection.start);
+      const b = Math.min(end, opts.selection.end);
+      if (b > a) {
+        const x1 = plotX + ((a - start) / n) * plotW;
+        const x2 = plotX + ((b - start) / n) * plotW;
+        ctx.fillStyle = 'rgba(125,211,252,0.15)';
+        ctx.fillRect(x1, 0, x2 - x1, plotH);
+        ctx.strokeStyle = 'rgba(125,211,252,0.6)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x1 + 0.5, 0.5, Math.max(0, x2 - x1 - 1), plotH - 1);
+      }
+    }
+
     // ---- time axis (bottom gutter) ----
     ctx.fillStyle = 'rgba(200,206,216,0.85)';
     ctx.textBaseline = 'top';

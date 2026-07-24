@@ -10,7 +10,11 @@ export function encodeWav(channels, sampleRate, opts = {}) {
   const bitDepth = opts.bitDepth || 16;
   const float = !!opts.float;
   const numChannels = channels.length;
-  const frameCount = channels.reduce((m, c) => Math.max(m, c.length), 0);
+  // fit === 'shortest' → trim to the shortest channel; otherwise pad to the longest
+  const frameCount = channels.length === 0 ? 0
+    : opts.fit === 'shortest'
+      ? channels.reduce((m, c) => Math.min(m, c.length), Infinity)
+      : channels.reduce((m, c) => Math.max(m, c.length), 0);
   const bytesPerSample = bitDepth / 8;
   const blockAlign = numChannels * bytesPerSample;
   const dataSize = frameCount * blockAlign;

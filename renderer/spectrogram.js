@@ -137,6 +137,21 @@ export function paintSpectrogram(canvas, image, opts = {}) {
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(image.off, colStart, 0, colEnd - colStart, image.off.height, plotX, 0, plotW, plotH);
 
+  // selection band (analysis region)
+  if (opts.selStart != null && opts.selEnd != null && vEnd > vStart) {
+    const a = Math.max(vStart, opts.selStart);
+    const b = Math.min(vEnd, opts.selEnd);
+    if (b > a) {
+      const x1 = plotX + ((a - vStart) / (vEnd - vStart)) * plotW;
+      const x2 = plotX + ((b - vStart) / (vEnd - vStart)) * plotW;
+      ctx.fillStyle = 'rgba(125,211,252,0.18)';
+      ctx.fillRect(x1, 0, x2 - x1, plotH);
+      ctx.strokeStyle = 'rgba(125,211,252,0.75)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x1 + 0.5, 0.5, Math.max(0, x2 - x1 - 1), plotH - 1);
+    }
+  }
+
   drawFreqAxis(ctx, { scale: image.scale, fMin: image.fMin, fMax: image.fMax, sMin: image.sMin, sMax: image.sMax, plotX, plotW, W, plotH, denomRow: plotH - 1 || 1 });
   drawTimeAxis(ctx, { startSec: vStart / sampleRate, durSec: (vEnd - vStart) / sampleRate, plotX, plotW, plotH, W });
 }

@@ -4,6 +4,7 @@ import { FORMATS, parsePcm, channelStats } from './pcm.js';
 import { drawWaveform, drawCursor, WF_LEFT, WF_BOTTOM } from './waveform.js';
 import { computeSpectrogramMatrix, buildSpectrogramImage, paintSpectrogram, LEFT_GUTTER } from './spectrogram.js';
 import { hilbertEnvelope } from './hilbert.js';
+import { frequencyResponse, renderFreqResponse } from './spectrum.js';
 import { WINDOWS } from './windows.js';
 import { SCALES, scaleForward, scaleInverse, effectiveFMin } from './scales.js';
 import { Player } from './player.js';
@@ -28,11 +29,25 @@ const specSettings = {
   dbMax: -10
 };
 
+// Global frequency-response (selected-region spectrum) settings.
+const frSettings = {
+  windowType: 'hann',
+  fftSize: 2048,
+  overlap: 0.5,
+  scale: 'log',
+  fMin: 0,
+  fMax: 0,
+  dbMin: -120,
+  dbMax: 0
+};
+
 const state = {
   files: [],          // see makeFile()
   exportOrder: [],    // [{ fileId, ch }]
   nextId: 1,
-  lastSaveDir: ''     // remembered folder for the save dialog
+  lastSaveDir: '',    // remembered folder for the save dialog
+  lengthMode: 'longest', // 'longest' (pad) | 'shortest' (trim) for mix/export
+  snapEnabled: true   // snap a new selection to another track's range (grid)
 };
 
 const player = new Player();          // per-file preview playback
@@ -102,6 +117,7 @@ function makeFile(meta, buffer) {
     stats: [],
     dom: null,
     view: { start: 0, end: 0 }, // per-file zoom window (samples), shared by all channels
+    selection: null,            // per-file analysis region {start,end} samples, or null
     panelHeight: PANEL_HEIGHT,  // per-file plot height (px), adjustable
     channelDom: []
   };
@@ -111,6 +127,7 @@ function parseFile(file) {
   file.parsed = parsePcm(file.buffer, file.settings);
   file.stats = file.parsed.channels.map(channelStats);
   file.view = { start: 0, end: file.parsed.frameCount }; // reset zoom to full
+  file.selection = null; // region invalid after re-parse
   // drop any export selections for channels that no longer exist
   state.exportOrder = state.exportOrder.filter(
     (e) => !(e.fileId === file.id && e.ch >= file.parsed.channels.length)
@@ -166,6 +183,9 @@ function flushResize() {
       ensureSpecImage(cd);   // height fixed → cached; width change → just repaint
       paintChannelSpec(cd);
       cursorsDirty = true;
+    } else if (target._kind === 'fr') {
+      if (!frVisible(cd) || cd.frCanvas._cssW === w) continue;
+      renderChannelFr(cd);
     }
   }
   if (cursorsDirty) drawAllCursors();
@@ -175,6 +195,7 @@ function unobserveChannels(file) {
   for (const cd of file.channelDom) {
     if (cd.wfWrap) sizeObserver.unobserve(cd.wfWrap);
     if (cd.specWrap) sizeObserver.unobserve(cd.specWrap);
+    if (cd.frInner) sizeObserver.unobserve(cd.frInner);
   }
 }
 
@@ -381,7 +402,7 @@ function buildChannelRow(file, data, ch, chWrap) {
   const viewLabel = el('span', { class: 'muted small wf-view' });
   const wfToolbar = el('div', { class: 'wf-toolbar' }, [
     envBtn, wfResetX, wfResetY, viewLabel,
-    el('span', { class: 'muted small wf-hint', textContent: 'wheel: zoom · drag: pan · (left axis = amplitude)' })
+    el('span', { class: 'muted small wf-hint', textContent: 'drag: select · click: seek · edge: resize · Shift+drag: pan · wheel: zoom' })
   ]);
 
   const wfWrap = el('div', { class: 'wf-wrap' });
@@ -396,7 +417,7 @@ function buildChannelRow(file, data, ch, chWrap) {
   const specResetY = el('button', { class: 'btn tiny ghost', textContent: '⟲ freq', title: 'Reset frequency zoom' });
   const specToolbar = el('div', { class: 'wf-toolbar' }, [
     specResetX, specResetY,
-    el('span', { class: 'muted small wf-hint', textContent: 'wheel: zoom · drag: pan · (left axis = frequency)' })
+    el('span', { class: 'muted small wf-hint', textContent: 'drag: select · click: seek · edge: resize · Shift+drag: pan · wheel: zoom' })
   ]);
   const specStatus = el('div', { class: 'spec-status muted small hidden', textContent: 'Computing…' });
   const specCanvas = el('canvas', { class: 'spec' });
@@ -405,7 +426,15 @@ function buildChannelRow(file, data, ch, chWrap) {
   specInner.style.height = file.panelHeight + 'px';
   const specWrap = el('div', { class: 'spec-wrap hidden' }, [specToolbar, specInner]);
 
-  const main = el('div', { class: 'ch-main' }, [wfPanel, specWrap]);
+  // frequency-response panel (shown when a region is selected)
+  const frLabel = el('div', { class: 'muted small wf-view', textContent: 'Freq response' });
+  const frToolbar = el('div', { class: 'wf-toolbar' }, [frLabel]);
+  const frCanvas = el('canvas', { class: 'fr' });
+  const frInner = el('div', { class: 'fr-inner' }, [frCanvas]);
+  frInner.style.height = file.panelHeight + 'px';
+  const frPanel = el('div', { class: 'fr-panel hidden' }, [frToolbar, frInner]);
+
+  const main = el('div', { class: 'ch-main' }, [wfPanel, specWrap, frPanel]);
 
   const row = el('div', { class: 'ch-row' }, [side, main]);
   chWrap.appendChild(row);
@@ -414,6 +443,7 @@ function buildChannelRow(file, data, ch, chWrap) {
     file, data, ch,
     checkbox, base, overlay, wfWrap, wfPanel, viewLabel,
     specWrap, specInner, specCanvas, specOverlay, specStatus,
+    frPanel, frInner, frCanvas, frLabel,
     btnWf, btnSpec, btnBoth, envBtn, plotBtn,
     peakLine, rmsLine, modes, main,
     plotOn: true,
@@ -422,7 +452,8 @@ function buildChannelRow(file, data, ch, chWrap) {
     ampView: { center: 0, range: 1 },      // waveform vertical (amplitude) view
     freqView: { min: null, max: null },     // spectrogram vertical (frequency) view; null = global
     matrix: null, matrixKey: '',
-    specImage: null, specImageKey: ''
+    specImage: null, specImageKey: '',
+    frResp: null, frKey: ''                 // frequency-response cache
   };
 
   // plot on/off toggle
@@ -440,8 +471,10 @@ function buildChannelRow(file, data, ch, chWrap) {
   // observe for resizing
   wfWrap._cd = cd; wfWrap._kind = 'wf';
   specWrap._cd = cd; specWrap._kind = 'spec';
+  frInner._cd = cd; frInner._kind = 'fr';
   sizeObserver.observe(wfWrap);
   sizeObserver.observe(specWrap);
+  sizeObserver.observe(frInner);
 
   setupWaveformInteraction(cd);
   setupSpecInteraction(cd);
@@ -463,6 +496,7 @@ function setPlot(cd, on) {
   cd.modes.classList.toggle('hidden', !on);
   cd.main.classList.toggle('hidden', !on);
   if (on) setChannelMode(cd, cd.mode); // re-render the current mode
+  updateFrVisibility(cd);
 }
 
 function setChannelMode(cd, mode) {
@@ -497,7 +531,8 @@ function drawChannelWaveform(cd) {
     ampCenter: cd.ampView.center,
     ampRange: cd.ampView.range,
     color: '#4ea1ff',
-    envelope: cd.envOn ? cd.envelope : null
+    envelope: cd.envOn ? cd.envelope : null,
+    selection: cd.file.selection
   });
   updateViewLabel(cd);
 }
@@ -551,6 +586,7 @@ function setFilePanelHeight(file, h) {
   for (const cd of file.channelDom) {
     cd.wfWrap.style.height = h + 'px';
     cd.specInner.style.height = h + 'px';
+    cd.frInner.style.height = h + 'px';
     if (wfVisible(cd)) {
       sizeCanvas(cd.base, h);
       sizeCanvas(cd.overlay, h);
@@ -562,6 +598,7 @@ function setFilePanelHeight(file, h) {
       ensureSpecImage(cd); // canvasHeight changed → key changes → rebuild
       paintChannelSpec(cd);
     }
+    if (frVisible(cd)) renderChannelFr(cd);
   }
   drawAllCursors();
 }
@@ -597,41 +634,98 @@ function attachAxisInteraction(wrapEl, cfg) {
     }
   }, { passive: false });
 
+  const EDGE_PX = 6; // grab distance for a selection edge
   let drag = null;
+  const fracAt = (clientX) => Math.min(1, Math.max(0, (clientX - drag.rectLeft - cfg.gutter) / drag.width));
+
   wrapEl.addEventListener('pointerdown', (ev) => {
     if (ev.button !== 0) return;
     const rect = wrapEl.getBoundingClientRect();
+    const overAxis = (ev.clientX - rect.left) < cfg.gutter;
+    const width = Math.max(1, rect.width - cfg.gutter);
     wrapEl.setPointerCapture(ev.pointerId);
     drag = {
-      x0: ev.clientX, y0: ev.clientY,
-      width: Math.max(1, rect.width - cfg.gutter),
-      height: Math.max(1, cfg.plotHeight()),
-      overAxis: (ev.clientX - rect.left) < cfg.gutter,
-      moved: false,
-      ctx: cfg.dragStart ? cfg.dragStart() : null
+      x0: ev.clientX, y0: ev.clientY, rectLeft: rect.left, width,
+      height: Math.max(1, cfg.plotHeight()), overAxis, moved: false,
+      mode: 'axis', startFrac: 0, lastA: 0, lastB: 0, ctx: null
     };
+    if (overAxis) { drag.mode = 'axis'; drag.ctx = cfg.dragStart ? cfg.dragStart() : null; return; }
+
+    const frac = (ev.clientX - rect.left - cfg.gutter) / width;
+    // grab a selection edge if the pointer is near one
+    const edges = cfg.selectionFracs ? cfg.selectionFracs() : null;
+    const edgeFrac = EDGE_PX / width;
+    let mode = null, startFrac = frac;
+    if (edges && cfg.onSelect) {
+      if (Math.abs(frac - edges[0]) <= edgeFrac) { mode = 'select'; startFrac = edges[1]; }      // left edge → right fixed
+      else if (Math.abs(frac - edges[1]) <= edgeFrac) { mode = 'select'; startFrac = edges[0]; }  // right edge → left fixed
+    }
+    if (!mode) mode = ev.shiftKey ? 'pan' : (cfg.onSelect ? 'select' : 'pan');
+    drag.mode = mode;
+    drag.startFrac = startFrac;
+    drag.lastA = Math.min(startFrac, frac);
+    drag.lastB = Math.max(startFrac, frac);
+    if (mode === 'pan') drag.ctx = cfg.dragStart ? cfg.dragStart() : null;
   });
+
   wrapEl.addEventListener('pointermove', (ev) => {
-    if (!drag) return;
-    const dx = ev.clientX - drag.x0;
-    const dy = ev.clientY - drag.y0;
+    if (!drag) {
+      // hover: show a resize cursor when near a selection edge
+      if (cfg.selectionFracs) {
+        const rect = wrapEl.getBoundingClientRect();
+        const width = Math.max(1, rect.width - cfg.gutter);
+        const frac = (ev.clientX - rect.left - cfg.gutter) / width;
+        const edges = cfg.selectionFracs();
+        const near = edges && frac >= 0 &&
+          (Math.abs(frac - edges[0]) <= EDGE_PX / width || Math.abs(frac - edges[1]) <= EDGE_PX / width);
+        wrapEl.style.cursor = near ? 'ew-resize' : '';
+      }
+      return;
+    }
+    const dx = ev.clientX - drag.x0, dy = ev.clientY - drag.y0;
     if (Math.abs(dx) > 3 || Math.abs(dy) > 3) drag.moved = true;
-    if (drag.overAxis) cfg.onAxisPan(dy / drag.height, drag.ctx);
-    else cfg.onTimePan(dx / drag.width, drag.ctx);
+    if (drag.mode === 'axis') cfg.onAxisPan(dy / drag.height, drag.ctx);
+    else if (drag.mode === 'pan') cfg.onTimePan(dx / drag.width, drag.ctx);
+    else if (drag.mode === 'select') {
+      const f = fracAt(ev.clientX);
+      drag.lastA = Math.min(drag.startFrac, f);
+      drag.lastB = Math.max(drag.startFrac, f);
+      cfg.onSelect(drag.lastA, drag.lastB, false);
+    }
   });
+
   const endDrag = (ev) => {
     if (!drag) return;
-    const wasDrag = drag.moved, overAxis = drag.overAxis;
-    const rect = wrapEl.getBoundingClientRect();
+    const d = drag;
     drag = null;
-    if (!wasDrag && !overAxis && cfg.onClick) {
-      const plotW = Math.max(1, rect.width - cfg.gutter);
-      const frac = Math.min(1, Math.max(0, (ev.clientX - rect.left - cfg.gutter) / plotW));
-      cfg.onClick(frac);
+    if (!d.moved) {
+      if (!d.overAxis && cfg.onClick) {
+        const plotW = Math.max(1, ev.currentTarget.getBoundingClientRect().width - cfg.gutter);
+        const frac = Math.min(1, Math.max(0, (ev.clientX - d.rectLeft - cfg.gutter) / plotW));
+        cfg.onClick(frac); // click = seek
+      }
+      return;
     }
+    if (d.mode === 'select') cfg.onSelect(d.lastA, d.lastB, true);
   };
   wrapEl.addEventListener('pointerup', endDrag);
   wrapEl.addEventListener('pointercancel', () => { drag = null; });
+}
+
+/** The file's selection edges as fractions of the current view (or null). */
+function selectionFracsOf(file) {
+  if (!file.selection) return null;
+  const v = file.view;
+  const len = v.end - v.start;
+  if (len <= 0) return null;
+  return [(file.selection.start - v.start) / len, (file.selection.end - v.start) / len];
+}
+
+/** Map a plot [0,1] fraction pair to samples in the file's current view. */
+function selectionFromFracs(file, aFrac, bFrac, done) {
+  const v = file.view;
+  const len = v.end - v.start;
+  setFileSelection(file, Math.round(v.start + aFrac * len), Math.round(v.start + bFrac * len), done);
 }
 
 function setupWaveformInteraction(cd) {
@@ -648,6 +742,8 @@ function setupWaveformInteraction(cd) {
       redrawFileViews(file);
     },
     onAxisPan: (dyFrac, ctx) => panAmp(cd, ctx.center0, dyFrac, cd.ampView.range),
+    onSelect: (a, b, done) => selectionFromFracs(file, a, b, done),
+    selectionFracs: () => selectionFracsOf(file),
     onClick: (frac) => {
       const v = file.view;
       const sample = v.start + frac * (v.end - v.start);
@@ -670,6 +766,8 @@ function setupSpecInteraction(cd) {
       redrawFileViews(file);
     },
     onAxisPan: (dyFrac, ctx) => panFreq(cd, ctx.freq0, dyFrac),
+    onSelect: (a, b, done) => selectionFromFracs(file, a, b, done),
+    selectionFracs: () => selectionFracsOf(file),
     onClick: (frac) => {   // click on the spectrogram seeks like the waveform
       const v = file.view;
       const sample = v.start + frac * (v.end - v.start);
@@ -770,10 +868,13 @@ function ensureSpecImage(cd) {
 function paintChannelSpec(cd) {
   if (!cd.specImage) return;
   const v = cd.file.view;
+  const sel = cd.file.selection;
   paintSpectrogram(cd.specCanvas, cd.specImage, {
     sampleRate: cd.file.settings.sampleRate,
     viewStart: v.start,
-    viewEnd: v.end
+    viewEnd: v.end,
+    selStart: sel ? sel.start : null,
+    selEnd: sel ? sel.end : null
   });
 }
 
@@ -835,6 +936,123 @@ function refreshAllSpectrograms(recompute) {
       showChannelSpec(cd, recompute);
     }
   }
+}
+
+// =======================================================================
+// Frequency response of the selected region
+// =======================================================================
+function frVisible(cd) { return cd.plotOn && !!cd.file.selection; }
+
+function frKeyFor(cd) {
+  const sel = cd.file.selection;
+  return `${sel.start}-${sel.end}|${frSettings.windowType}|${frSettings.fftSize}|${frSettings.overlap}|${cd.data.length}`;
+}
+
+function ensureFr(cd) {
+  if (!cd.file.selection) return;
+  const key = frKeyFor(cd);
+  if (cd.frResp && cd.frKey === key) return;
+  cd.frResp = frequencyResponse(cd.data, cd.file.selection.start, cd.file.selection.end, {
+    windowType: frSettings.windowType,
+    fftSize: frSettings.fftSize,
+    overlap: frSettings.overlap
+  });
+  cd.frKey = key;
+}
+
+function renderChannelFr(cd) {
+  if (!frVisible(cd)) return;
+  sizeCanvas(cd.frCanvas, cd.file.panelHeight);
+  ensureFr(cd);
+  renderFreqResponse(cd.frCanvas, cd.frResp, {
+    sampleRate: cd.file.settings.sampleRate,
+    scale: frSettings.scale,
+    fMin: frSettings.fMin,
+    fMax: frSettings.fMax,
+    dbMin: frSettings.dbMin,
+    dbMax: frSettings.dbMax
+  });
+  const sr = cd.file.settings.sampleRate;
+  const sel = cd.file.selection;
+  cd.frLabel.textContent =
+    `Freq response · ${(sel.start / sr).toFixed(3)}–${(sel.end / sr).toFixed(3)}s` +
+    (cd.frResp ? ` · ${cd.frResp.frames} frame${cd.frResp.frames === 1 ? '' : 's'} × ${cd.frResp.fftSize}` : '');
+}
+
+/** Show/hide a channel's FR panel to match plot + selection state. */
+function updateFrVisibility(cd) {
+  const show = frVisible(cd);
+  cd.frPanel.classList.toggle('hidden', !show);
+  if (show) requestAnimationFrame(() => renderChannelFr(cd));
+}
+
+/** Re-render every visible FR panel (settings changed). */
+function refreshAllFr(recompute) {
+  for (const f of state.files) {
+    for (const cd of f.channelDom) {
+      if (!frVisible(cd)) continue;
+      if (recompute) cd.frKey = '';
+      renderChannelFr(cd);
+    }
+  }
+}
+
+// ---- selection (analysis region) ----
+
+/** Another file's current selection, as a time grid (seconds). */
+function referenceSelectionFor(file) {
+  for (const f of state.files) {
+    if (f.id !== file.id && f.selection) {
+      const sr = f.settings.sampleRate;
+      const startSec = f.selection.start / sr;
+      const lenSec = (f.selection.end - f.selection.start) / sr;
+      return { startSec, lenSec };
+    }
+  }
+  return null;
+}
+
+/** Snap a time (s) onto the grid {refStart + k·refLen}, within 20% of the spacing. */
+function snapToGrid(t, ref) {
+  const grid = ref.lenSec;
+  if (!(grid > 0)) return t;
+  const k = Math.round((t - ref.startSec) / grid);
+  const gridT = ref.startSec + k * grid;
+  return Math.abs(t - gridT) <= grid * 0.2 ? gridT : t;
+}
+
+function setFileSelection(file, s, e, done) {
+  let a = Math.min(s, e);
+  let b = Math.max(s, e);
+  // grid-snap to another track's selected range for alignment
+  if (state.snapEnabled) {
+    const ref = referenceSelectionFor(file);
+    if (ref) {
+      const sr = file.settings.sampleRate;
+      const na = Math.round(snapToGrid(a / sr, ref) * sr);
+      const nb = Math.round(snapToGrid(b / sr, ref) * sr);
+      a = Math.min(na, nb);
+      b = Math.max(na, nb);
+    }
+  }
+  a = Math.max(0, a);
+  b = Math.min(file.parsed.frameCount, b);
+  const minLen = Math.max(2, Math.round(file.settings.sampleRate * 0.0005));
+  if (done && b - a < minLen) { clearFileSelection(file); return; }
+  file.selection = { start: a, end: b };
+  if (file.dom) file.dom.dataset.sel = `${a},${b}`;
+  redrawFileViews(file);                       // draw the band on wf/spec
+  for (const cd of file.channelDom) cd.frKey = ''; // region changed → recompute
+  if (done) {
+    for (const cd of file.channelDom) updateFrVisibility(cd);
+  }
+}
+
+function clearFileSelection(file) {
+  file.selection = null;
+  if (file.dom) file.dom.dataset.sel = '';
+  redrawFileViews(file);
+  for (const cd of file.channelDom) cd.frPanel.classList.add('hidden');
 }
 
 // =======================================================================
@@ -1005,7 +1223,7 @@ previewPlayer.onEnded = () => { updatePreviewButton(); updatePreviewProgress(); 
 
 /** Signature of the current selection + rate, to detect when a reload is needed. */
 function selectionKey() {
-  return state.exportOrder.map((e) => e.fileId + ':' + e.ch).join(',') + '@' + $('#export-sr').value;
+  return state.exportOrder.map((e) => e.fileId + ':' + e.ch).join(',') + '@' + $('#export-sr').value + '|' + state.lengthMode;
 }
 
 /** Down-mix all selected channels to a single mono monitor track (averaged). */
@@ -1015,11 +1233,14 @@ function buildPreviewMix() {
     .filter(Boolean);
   if (!chans.length) return null;
   const sampleRate = Math.max(1, parseInt($('#export-sr').value) || 48000);
-  const len = chans.reduce((m, c) => Math.max(m, c.length), 0);
+  const len = state.lengthMode === 'shortest'
+    ? chans.reduce((m, c) => Math.min(m, c.length), Infinity)
+    : chans.reduce((m, c) => Math.max(m, c.length), 0);
   const mix = new Float32Array(len);
   const inv = 1 / chans.length;
   for (const c of chans) {
-    for (let i = 0; i < c.length; i++) mix[i] += c[i] * inv;
+    const n = Math.min(c.length, len);
+    for (let i = 0; i < n; i++) mix[i] += c[i] * inv;
   }
   return { channels: [mix], sampleRate };
 }
@@ -1188,12 +1409,15 @@ async function doExport() {
   const maxLen = Math.max(...lengths);
   if (minLen !== maxLen) {
     const sr = sampleRate;
+    const shortest = state.lengthMode === 'shortest';
+    const tail = shortest
+      ? `계속하면 긴 채널은 끝부분이 잘려 가장 짧은 ${minLen.toLocaleString()} 프레임 길이로 저장됩니다.`
+      : `계속하면 짧은 채널은 끝부분이 무음으로 채워져 가장 긴 ${maxLen.toLocaleString()} 프레임 길이로 저장됩니다.`;
     const msg =
       `선택한 채널들의 길이가 다릅니다.\n\n` +
       `가장 짧은 채널: ${minLen.toLocaleString()} 프레임 (${timeStr(minLen / sr)})\n` +
       `가장 긴 채널: ${maxLen.toLocaleString()} 프레임 (${timeStr(maxLen / sr)})\n\n` +
-      `계속하면 짧은 채널은 끝부분이 무음으로 채워져 ${maxLen.toLocaleString()} 프레임 길이로 저장됩니다.\n` +
-      `그대로 저장할까요?`;
+      `${tail}\n그대로 저장할까요?`;
     if (!window.confirm(msg)) {
       setStatus('Export canceled — channel lengths differ.');
       return;
@@ -1208,7 +1432,7 @@ async function doExport() {
   await new Promise((r) => setTimeout(r, 10));
 
   try {
-    const wav = encodeWav(channels, sampleRate, { bitDepth, float });
+    const wav = encodeWav(channels, sampleRate, { bitDepth, float, fit: state.lengthMode });
     const res = await window.api.saveWav(wav, outName, state.lastSaveDir);
     if (res.saved) {
       state.lastSaveDir = res.dir || state.lastSaveDir;
@@ -1483,6 +1707,39 @@ function setupSpecControls() {
   bindNum('#spec-dbmax', 'dbMax', -10);
 }
 
+function setupFrControls() {
+  fillSelect($('#fr-window'), Object.entries(WINDOWS), frSettings.windowType);
+  fillSelect($('#fr-size'), [256, 512, 1024, 2048, 4096, 8192, 16384].map((n) => [n, n]), frSettings.fftSize);
+  fillSelect($('#fr-overlap'), [[0, '0%'], [0.5, '50%'], [0.75, '75%'], [0.875, '87.5%']], frSettings.overlap);
+  fillSelect($('#fr-scale'), Object.entries(SCALES), frSettings.scale);
+
+  // compute-affecting → recompute the spectrum
+  $('#fr-window').onchange = (e) => { frSettings.windowType = e.target.value; refreshAllFr(true); };
+  $('#fr-size').onchange = (e) => { frSettings.fftSize = parseInt(e.target.value); refreshAllFr(true); };
+  $('#fr-overlap').onchange = (e) => { frSettings.overlap = parseFloat(e.target.value); refreshAllFr(true); };
+  // render-only → just re-render
+  $('#fr-scale').onchange = (e) => { frSettings.scale = e.target.value; refreshAllFr(false); };
+
+  const bindNum = (id, key, fallback) => {
+    const inp = $(id);
+    inp.onchange = () => {
+      const v = inp.value.trim();
+      frSettings[key] = v === '' ? fallback : Number(v);
+      refreshAllFr(false);
+    };
+  };
+  bindNum('#fr-fmin', 'fMin', 0);
+  bindNum('#fr-fmax', 'fMax', 0);
+  bindNum('#fr-dbmin', 'dbMin', -120);
+  bindNum('#fr-dbmax', 'dbMax', 0);
+
+  $('#fr-clear').onclick = () => { for (const f of state.files) clearFileSelection(f); };
+
+  const snap = $('#snap-enabled');
+  snap.checked = state.snapEnabled;
+  snap.onchange = () => { state.snapEnabled = snap.checked; };
+}
+
 // =======================================================================
 // Wire up global controls
 // =======================================================================
@@ -1509,6 +1766,18 @@ window.addEventListener('DOMContentLoaded', () => {
   };
   gainSlider.addEventListener('input', applyGain);
   applyGain();
+
+  // length mode: pad to longest vs trim to shortest (mix + export)
+  const lenLongest = $('#len-longest');
+  const lenShortest = $('#len-shortest');
+  const setLengthMode = (mode) => {
+    state.lengthMode = mode;
+    lenLongest.classList.toggle('active', mode === 'longest');
+    lenShortest.classList.toggle('active', mode === 'shortest');
+    updateExportPanel(); // refresh warning + invalidate preview so it rebuilds
+  };
+  lenLongest.onclick = () => setLengthMode('longest');
+  lenShortest.onclick = () => setLengthMode('shortest');
 
   setupDragAndDrop();
 
@@ -1537,6 +1806,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   setupPresets();
   setupSpecControls();
+  setupFrControls();
   updateExportPanel();
   setStatus('Open one or more PCM dumps to begin — click “Open PCM files…” or drag files onto the window.');
 });

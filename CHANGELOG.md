@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-07-24
+
+### Added
+- **Frequency response of a selected region**: drag on a waveform or spectrogram
+  to select a time range, and a magnitude spectrum plots below the channel's
+  plots (same size). Long regions are Welch power-averaged across overlapping
+  windows. A dedicated control bar (window, size, overlap, scale, freq range,
+  dB range) sits under the Spectrogram bar.
+- **Selection band** drawn on the waveform and spectrogram; **drag its left/right
+  edge to resize** the range (the cursor becomes a resize handle near an edge).
+- **Snap to another track's range**: a new selection snaps to another file's
+  selected range (grid aligned to its start and length), so the same time window
+  can be compared across files. Checkbox in the Freq-response bar, on by default.
+- **Length mode** for mixing/export: a 2-tab toggle to fit selected channels to
+  the **longest (pad with silence)** or **shortest (trim)** channel.
+
+### Changed
+- Plot gestures: **drag = select a range**, **click = seek**, **drag a selection
+  edge = resize**, **Shift+drag = pan** (previously plain-drag panned and
+  Shift+drag selected).
+
+[1.3.0]: https://github.com/kjhyeon1573/PCM_Parser/releases/tag/v1.3.0
+
 ## [1.2.0] - 2026-07-24
 
 ### Added

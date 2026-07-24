@@ -39,6 +39,21 @@
     <span class="muted small specbar-hint">Applies to all open spectrograms</span>
   </div>
 
+  <div class="specbar frbar">
+    <span class="specbar-title">Freq response</span>
+    <label>Window <select id="fr-window"></select></label>
+    <label>Size <select id="fr-size"></select></label>
+    <label>Overlap <select id="fr-overlap"></select></label>
+    <label>Scale <select id="fr-scale"></select></label>
+    <label>Freq min <input id="fr-fmin" class="num wide" type="number" min="0" value="0" /> Hz</label>
+    <label>Freq max <input id="fr-fmax" class="num wide" type="number" min="0" placeholder="auto" /> Hz</label>
+    <label>dB min <input id="fr-dbmin" class="num" type="number" value="-120" /></label>
+    <label>dB max <input id="fr-dbmax" class="num" type="number" value="0" /></label>
+    <button id="fr-clear" class="btn small ghost">Clear selection</button>
+    <label class="snap-label"><input id="snap-enabled" type="checkbox" checked /> <span class="muted small">Snap to other track's range</span></label>
+    <span class="muted small specbar-hint">Drag a plot to select a range · drag its edges to adjust</span>
+  </div>
+
   <main class="layout">
     <section id="files" class="files"></section>
 
@@ -58,6 +73,13 @@
             <option value="f32">32-bit float</option>
           </select>
         </label>
+        <div class="length-mode">
+          <span class="muted small">Length</span>
+          <div class="seg" role="tablist">
+            <button id="len-longest" class="seg-btn active" title="Pad shorter channels with silence">Longest (pad)</button>
+            <button id="len-shortest" class="seg-btn" title="Trim to the shortest channel">Shortest (trim)</button>
+          </div>
+        </div>
       </div>
       <div class="preview-box">
         <div class="preview-head">

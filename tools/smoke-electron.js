@@ -62,6 +62,10 @@ app.whenReady().then(async () => {
       hasPresets: !!document.getElementById('preset-select') && !!document.getElementById('preset-save') && !!document.getElementById('preset-name'),
       hasAutoName: !!document.getElementById('export-auto'),
       autoNameChecked: document.getElementById('export-auto')?.checked,
+      hasLengthTabs: !!document.getElementById('len-longest') && !!document.getElementById('len-shortest'),
+      lengthDefaultLongest: document.getElementById('len-longest')?.classList.contains('active'),
+      hasFrBar: !!document.getElementById('fr-window') && !!document.getElementById('fr-clear') && document.getElementById('fr-scale')?.options.length >= 4,
+      snapDefaultOn: document.getElementById('snap-enabled')?.checked,
       cssPlotToggle: !!Array.from(document.styleSheets).some(s => { try { return Array.from(s.cssRules).some(r => r.selectorText === '.plot-toggle'); } catch (e) { return false; } }),
       cssCardResizer: !!Array.from(document.styleSheets).some(s => { try { return Array.from(s.cssRules).some(r => r.selectorText === '.card-resizer'); } catch (e) { return false; } })
     }))()`);
@@ -81,6 +85,10 @@ app.whenReady().then(async () => {
   if (!probe || !probe.hasPreview) errors.push('mixed preview controls missing');
   if (!probe || probe.previewDisabled !== true) errors.push('preview button should start disabled (no selection)');
   if (!probe || !probe.hasPresets) errors.push('preset controls missing');
+  if (!probe || !probe.hasLengthTabs) errors.push('length-mode tabs missing');
+  if (!probe || probe.lengthDefaultLongest !== true) errors.push('length mode should default to Longest');
+  if (!probe || !probe.hasFrBar) errors.push('frequency-response control bar missing');
+  if (!probe || probe.snapDefaultOn !== true) errors.push('snap checkbox should default to on');
   if (!probe || !probe.hasAutoName) errors.push('auto-name checkbox missing');
   if (!probe || probe.autoNameChecked !== true) errors.push('auto-name should default to checked');
   if (!probe || !/^export_0ch_\d{8}_\d{6}\.wav$/.test(probe.nameValue)) errors.push('auto name not timestamped: ' + probe.nameValue);
@@ -183,6 +191,31 @@ app.whenReady().then(async () => {
     if (!(sx.litFull > 100)) errors.push('spectrogram build/paint full too few pixels: ' + sx.litFull);
     if (!(sx.litCrop > 100)) errors.push('spectrogram time-crop too few pixels: ' + sx.litCrop);
     if (!(sx.litFreqZoom > 100)) errors.push('spectrogram freq-zoom too few pixels: ' + sx.litFreqZoom);
+  }
+
+  // Frequency-response compute + render path.
+  let fr;
+  try {
+    fr = await win.webContents.executeJavaScript(`(async () => {
+      const mod = await import('./spectrum.js');
+      const SR = 48000, N = 20000, F = 3000;
+      const sig = new Float32Array(N);
+      for (let i = 0; i < N; i++) sig[i] = 0.5 * Math.sin(2 * Math.PI * F * i / SR);
+      const r = mod.frequencyResponse(sig, 2000, 18000, { windowType: 'hann', fftSize: 2048, overlap: 0.5 });
+      const c = document.createElement('canvas'); c.width = 500; c.height = 200;
+      mod.renderFreqResponse(c, r, { sampleRate: SR, scale: 'log', fMin: 0, fMax: 0, dbMin: -120, dbMax: 0 });
+      const d = c.getContext('2d', { willReadFrequently: true }).getImageData(mod.FR_LEFT, 0, 400, 180).data;
+      let lit = 0; for (let i = 0; i < d.length; i += 4) if (d[i+2] > 120 && d[i+2] > d[i]) lit++;
+      let best = 0, bv = -Infinity; for (let b = 0; b < r.bins; b++) if (r.db[b] > bv) { bv = r.db[b]; best = b; }
+      return { frames: r.frames, litCurve: lit, peakHz: Math.round(best * SR / r.fftSize) };
+    })()`);
+  } catch (err) {
+    errors.push('freq-response probe threw: ' + err.message);
+  }
+  console.log('FR:', JSON.stringify(fr));
+  if (fr) {
+    if (!(fr.litCurve > 50)) errors.push('freq-response curve too few pixels: ' + fr.litCurve);
+    if (Math.abs(fr.peakHz - 3000) > 60) errors.push('freq-response peak not at ~3000Hz: ' + fr.peakHz);
   }
 
   // Verify the channel-mapping fix in the real audio engine (OfflineAudioContext):

@@ -10,6 +10,7 @@ import { makeWindow, WINDOWS } from '../renderer/windows.js';
 import { scaleForward, scaleInverse, freqTicks } from '../renderer/scales.js';
 import { computeSpectrogramMatrix } from '../renderer/spectrogram.js';
 import { hilbertEnvelope } from '../renderer/hilbert.js';
+import { frequencyResponse } from '../renderer/spectrum.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, '..');
@@ -110,6 +111,17 @@ console.log('== differing lengths pad to longest ==');
   ok(dv.getInt16(44 + 3 * 4 + 2, true) === 0, 'short channel padded with silence');
 }
 
+console.log('== fit=shortest trims to the shortest channel ==');
+{
+  const a = new Float32Array([1, 1, 1, 1]);
+  const b = new Float32Array([1, 1]);
+  const wav = encodeWav([a, b], 8000, { bitDepth: 16, fit: 'shortest' });
+  const dv = new DataView(wav);
+  ok(dv.getUint32(40, true) === 2 * 2 * 2, 'trimmed to 2 frames');
+  // both channels present at full scale for the 2 kept frames
+  ok(dv.getInt16(44, true) === 32767 && dv.getInt16(46, true) === 32767, 'frame0 both channels kept');
+}
+
 console.log('== window functions ==');
 {
   ok(Object.keys(WINDOWS).length >= 6, `${Object.keys(WINDOWS).length} window types available`);
@@ -184,6 +196,25 @@ console.log('== Hilbert envelope of a tone ==');
   // smoothing option returns same length and stays near amplitude
   const sm = hilbertEnvelope(sig, { smooth: 96 });
   near(sm[N / 2], A, 0.05, 'smoothed envelope ~ amplitude at center');
+}
+
+console.log('== frequency response of a region ==');
+{
+  const SR = 48000, N = 20000, F = 3000, A = 0.5;
+  const sig = new Float32Array(N);
+  for (let i = 0; i < N; i++) sig[i] = A * Math.sin((2 * Math.PI * F * i) / SR);
+  const r = frequencyResponse(sig, 2000, 18000, { windowType: 'hann', fftSize: 2048, overlap: 0.5 });
+  ok(r.bins === 1024, 'bins = fftSize/2');
+  ok(r.frames > 1, `Welch averaged ${r.frames} frames`);
+  let best = 0, bestVal = -Infinity;
+  for (let b = 0; b < r.bins; b++) if (r.db[b] > bestVal) { bestVal = r.db[b]; best = b; }
+  const peakHz = (best * SR) / r.fftSize;
+  near(peakHz, F, 40, `peak at ~${F}Hz (got ${peakHz.toFixed(0)})`);
+  // amplitude 0.5 → -6 dBFS peak (20·log10(0.5))
+  near(bestVal, -6, 1.5, `peak level ~ -6 dBFS for 0.5-amplitude tone (got ${bestVal.toFixed(1)} dB)`);
+  // a bin far from the tone should be much lower
+  const farBin = Math.round((12000 * r.fftSize) / SR);
+  ok(r.db[farBin] < bestVal - 30, 'off-tone bin ≥30 dB below peak');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
