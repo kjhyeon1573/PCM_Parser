@@ -13,7 +13,9 @@ exporting selected channels from multiple files into a single N-channel WAV.
   - **Vertical-axis zoom & pan** (wheel/drag over the left axis): amplitude for the waveform, frequency for the spectrogram, each with its own reset
   - **Hilbert amplitude envelope** (RMS-like) overlay toggle
   - Per-channel view mode: **Waveform / Spectrogram / Both** (unified height)
-- **Preview playback** — per-file play/pause/seek (also **click the spectrogram** to seek); **only the checked channels are audible**. Plus a **mixed N-channel preview** of the export selection
+- Per-channel **plot toggle** and per-file **plot height** (drag the card's bottom edge)
+- **Preview playback** — per-file play/pause/seek (also **click the spectrogram** to seek); **only the checked channels are audible**; adjustable **playback gain**. Plus a **mixed N-channel preview** of the export selection
+- **HiDPI-crisp** canvases (waveform, spectrogram, axes)
 - Per-channel **spectrogram** (STFT, magma colormap) on demand, with global controls:
   window type (Hann/Hamming/Blackman/Blackman-Harris/Bartlett/Flat-top/Rectangular),
   FFT/window size, overlap, frequency scale (**linear / log / mel / bark**),

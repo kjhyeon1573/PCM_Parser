@@ -86,6 +86,10 @@ input.num.wide { width: 74px; }
 /* ---- layout ---- */
 .layout { display: flex; flex: 1; min-height: 0; }
 .files { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+.files::-webkit-scrollbar, .sidebar::-webkit-scrollbar { width: 11px; }
+.files::-webkit-scrollbar-thumb, .sidebar::-webkit-scrollbar-thumb { background: #3a4150; border-radius: 6px; border: 3px solid var(--bg); }
+.files::-webkit-scrollbar-thumb:hover, .sidebar::-webkit-scrollbar-thumb:hover { background: #4a5265; }
+.files::-webkit-scrollbar-track, .sidebar::-webkit-scrollbar-track { background: transparent; }
 .sidebar {
   width: 300px;
   background: var(--panel);
@@ -96,7 +100,13 @@ input.num.wide { width: 74px; }
 .sidebar h2 { font-size: 14px; margin: 0 0 6px; }
 
 /* ---- file card ---- */
-.file-card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.file-card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; flex-shrink: 0; }
+
+/* draggable bottom edge to resize a file's plots */
+.card-resizer { height: 12px; cursor: ns-resize; display: flex; align-items: center; justify-content: center; touch-action: none; border-top: 1px solid transparent; }
+.card-resizer::before { content: ''; width: 44px; height: 3px; border-radius: 2px; background: var(--line); transition: background .12s, width .12s; }
+.card-resizer:hover::before, .card-resizer.active::before { background: var(--accent); width: 72px; }
+.card-resizer.active { background: rgba(78,161,255,0.06); }
 .file-header {
   display: flex; align-items: center; gap: 14px;
   padding: 10px 14px; background: var(--panel2); border-bottom: 1px solid var(--line);
@@ -114,8 +124,10 @@ input.num.wide { width: 74px; }
 .ch-row { display: flex; gap: 12px; align-items: flex-start; }
 
 /* left side: checkbox, peak, rms, view-mode buttons */
-.ch-side { width: 116px; flex: none; display: flex; flex-direction: column; gap: 3px; }
-.ch-head { display: flex; align-items: center; gap: 5px; font-weight: 600; }
+.ch-side { width: 132px; flex: none; display: flex; flex-direction: column; gap: 3px; }
+.ch-head { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.ch-check { display: inline-flex; align-items: center; gap: 5px; }
+.plot-toggle { margin-left: auto; }
 .ch-stat { line-height: 1.3; }
 .ch-modes { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 .ch-modes .btn { width: 100%; text-align: center; }
@@ -159,10 +171,15 @@ canvas.spec.dim { opacity: 0.5; }
   background: #11141a; border: 1px solid var(--line); cursor: pointer; overflow: hidden;
 }
 .preview-prog { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--accent); }
+.gain-row { display: flex; align-items: center; gap: 8px; }
+.gain-row input[type=range] { flex: 1; accent-color: var(--accent); cursor: pointer; }
+#gain-val { min-width: 38px; text-align: right; font-variant-numeric: tabular-nums; }
 
 /* ---- export: filename + recent path ---- */
 .export-after { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
-.save-row { display: flex; flex-direction: column; gap: 4px; }
+.save-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.auto-label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.fname-input.readonly { opacity: 0.7; cursor: default; }
 .fname-input {
   background: #12151b; color: var(--text);
   border: 1px solid var(--line); border-radius: 5px;

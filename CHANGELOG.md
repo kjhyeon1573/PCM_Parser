@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-07-24
+
+### Added
+- **Playback gain** slider (0–400%) that applies live to both per-file playback
+  and the mixed preview (via a Web Audio GainNode).
+- **Per-channel plot toggle** (`plot`): turn a channel's plots off to hide its
+  peak/rms, view-mode buttons, and waveform/spectrogram, leaving just the checkbox.
+- **Adjustable plot height per file**: drag the card's bottom edge up/down to
+  resize that file's waveform/spectrogram panels (the handle tracks the cursor).
+- **Auto file-name control**: an `auto` checkbox toggles automatic naming; the
+  auto name is now `export_<N>ch_<YYYYMMDD_HHMMSS>.wav` (timestamp regenerated at
+  save time). Uncheck to edit the name manually.
+
+### Changed
+- **HiDPI rendering**: canvases are now backed by a `devicePixelRatio`-scaled
+  buffer, so waveforms, spectrograms, axes and cursors render crisply on scaled
+  displays.
+
+### Fixed
+- **Seeking during playback** no longer stops or jumps: a stale `onended` from
+  the superseded audio source could reset playback state; the source lifecycle
+  is now guarded so seeking continues smoothly from the new position.
+- **Plots/handle clipped off-screen** with 3+ channels in Both mode or several
+  files: file cards no longer shrink and clip their content (`flex-shrink: 0`),
+  so the plot list scrolls and every card's resize handle stays reachable.
+
+[1.2.0]: https://github.com/kjhyeon1573/PCM_Parser/releases/tag/v1.2.0
+
 ## [1.1.1] - 2026-07-23
 
 ### Fixed

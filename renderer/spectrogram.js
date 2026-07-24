@@ -110,10 +110,14 @@ export function buildSpectrogramImage(matrix, opts = {}) {
  */
 export function paintSpectrogram(canvas, image, opts = {}) {
   const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
+  // HiDPI: buffer is dpr× the CSS size; draw in CSS-pixel logical coordinates.
+  const dpr = canvas._dpr || 1;
+  const W = canvas._cssW || canvas.width;
+  const H = canvas._cssH || canvas.height;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const plotX = LEFT_GUTTER;
   const plotW = Math.max(1, W - LEFT_GUTTER);
-  const plotH = image.plotH;
+  const plotH = Math.max(1, H - BOTTOM_GUTTER);
   const sampleRate = opts.sampleRate || 48000;
 
   ctx.clearRect(0, 0, W, H);
@@ -131,9 +135,9 @@ export function paintSpectrogram(canvas, image, opts = {}) {
   colEnd = Math.max(colStart + 1e-3, Math.min(image.cols, colEnd));
 
   ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(image.off, colStart, 0, colEnd - colStart, plotH, plotX, 0, plotW, plotH);
+  ctx.drawImage(image.off, colStart, 0, colEnd - colStart, image.off.height, plotX, 0, plotW, plotH);
 
-  drawFreqAxis(ctx, { scale: image.scale, fMin: image.fMin, fMax: image.fMax, sMin: image.sMin, sMax: image.sMax, plotX, plotH, denomRow: plotH - 1 || 1 });
+  drawFreqAxis(ctx, { scale: image.scale, fMin: image.fMin, fMax: image.fMax, sMin: image.sMin, sMax: image.sMax, plotX, plotW, W, plotH, denomRow: plotH - 1 || 1 });
   drawTimeAxis(ctx, { startSec: vStart / sampleRate, durSec: (vEnd - vStart) / sampleRate, plotX, plotW, plotH, W });
 }
 
@@ -160,7 +164,7 @@ function drawFreqAxis(ctx, o) {
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(o.plotX, row + 0.5);
-    ctx.lineTo(ctx.canvas.width, row + 0.5);
+    ctx.lineTo(o.W, row + 0.5);
     ctx.stroke();
     const label = formatHz(f);
     const y = Math.min(o.plotH - 6, Math.max(6, row));

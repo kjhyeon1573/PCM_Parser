@@ -59,7 +59,11 @@ app.whenReady().then(async () => {
       hasSpecRange: !!document.getElementById('spec-fmax') && !!document.getElementById('spec-dbmin'),
       hasPreview: !!document.getElementById('preview-btn') && !!document.getElementById('preview-bar'),
       previewDisabled: document.getElementById('preview-btn')?.disabled,
-      hasPresets: !!document.getElementById('preset-select') && !!document.getElementById('preset-save') && !!document.getElementById('preset-name')
+      hasPresets: !!document.getElementById('preset-select') && !!document.getElementById('preset-save') && !!document.getElementById('preset-name'),
+      hasAutoName: !!document.getElementById('export-auto'),
+      autoNameChecked: document.getElementById('export-auto')?.checked,
+      cssPlotToggle: !!Array.from(document.styleSheets).some(s => { try { return Array.from(s.cssRules).some(r => r.selectorText === '.plot-toggle'); } catch (e) { return false; } }),
+      cssCardResizer: !!Array.from(document.styleSheets).some(s => { try { return Array.from(s.cssRules).some(r => r.selectorText === '.card-resizer'); } catch (e) { return false; } })
     }))()`);
   } catch (err) {
     errors.push('probe threw: ' + err.message);
@@ -77,6 +81,9 @@ app.whenReady().then(async () => {
   if (!probe || !probe.hasPreview) errors.push('mixed preview controls missing');
   if (!probe || probe.previewDisabled !== true) errors.push('preview button should start disabled (no selection)');
   if (!probe || !probe.hasPresets) errors.push('preset controls missing');
+  if (!probe || !probe.hasAutoName) errors.push('auto-name checkbox missing');
+  if (!probe || probe.autoNameChecked !== true) errors.push('auto-name should default to checked');
+  if (!probe || !/^export_0ch_\d{8}_\d{6}\.wav$/.test(probe.nameValue)) errors.push('auto name not timestamped: ' + probe.nameValue);
 
   // Exercise the real STFT + render pipeline across every frequency scale.
   let render;
@@ -211,6 +218,43 @@ app.whenReady().then(async () => {
     if (!(audio.threeChLast < 0.01)) errors.push('expected 3ch-last-channel to be dropped by downmix, got ' + audio.threeChLast);
     if (!(audio.monoFix > 0.05)) errors.push('mono fix path is silent: ' + audio.monoFix);
     if (!(audio.stereoRight > 0.05)) errors.push('stereo direct path is silent: ' + audio.stereoRight);
+  }
+
+  // Seeking during playback must keep playing (no stale onended resetting state).
+  let seekp;
+  try {
+    seekp = await win.webContents.executeJavaScript(`(async () => {
+      const { Player } = await import('./player.js');
+      const p = new Player();
+      let ended = 0; p.onEnded = () => ended++;
+      const N = 48000, d = new Float32Array(N);
+      for (let i = 0; i < N; i++) d[i] = 0.1 * Math.sin(2 * Math.PI * 220 * i / 48000);
+      p.load('t', [d], 48000);
+      p.play();
+      p.seek(0.5);
+      const afterSeek = { playing: p.playing, offset: p.offset };
+      await new Promise(r => setTimeout(r, 150)); // let any stale onended fire
+      const afterWait = { playing: p.playing, ended };
+      p.stop();
+      // gain: setGain before load must reach the GainNode after ctx creation
+      const g = new Player(); g.setGain(0.5); g.load('t', [d], 48000);
+      const gainVal = g.gain ? g.gain.gain.value : null;
+      g.setGain(2); const gainVal2 = g.gain.gain.value;
+      const hasGainSlider = !!document.getElementById('gain-slider');
+      return { afterSeek, afterWait, gainVal, gainVal2, hasGainSlider };
+    })()`);
+  } catch (err) {
+    errors.push('seek probe threw: ' + err.message);
+  }
+  console.log('SEEK:', JSON.stringify(seekp));
+  if (seekp) {
+    if (seekp.afterSeek.playing !== true) errors.push('player stopped playing right after seek');
+    if (Math.abs(seekp.afterSeek.offset - 0.5) > 1e-6) errors.push('seek offset wrong: ' + seekp.afterSeek.offset);
+    if (seekp.afterWait.playing !== true) errors.push('stale onended stopped playback after seek');
+    if (seekp.afterWait.ended !== 0) errors.push('spurious onended fired after seek: ' + seekp.afterWait.ended);
+    if (seekp.gainVal !== 0.5) errors.push('setGain before load not applied: ' + seekp.gainVal);
+    if (seekp.gainVal2 !== 2) errors.push('setGain not applied live: ' + seekp.gainVal2);
+    if (!seekp.hasGainSlider) errors.push('gain slider missing');
   }
   if (!probe || probe.defFormatOptions < 5) errors.push('format dropdown not populated');
   if (!probe || !probe.status) errors.push('status not initialized');

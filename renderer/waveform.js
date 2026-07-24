@@ -18,8 +18,11 @@ export const WF_BOTTOM = 18;
  */
 export function drawWaveform(canvas, data, opts = {}) {
   const ctx = canvas.getContext('2d');
-  const w = canvas.width;
-  const h = canvas.height;
+  // HiDPI: buffer is dpr× the CSS size; draw in CSS-pixel logical coordinates.
+  const dpr = canvas._dpr || 1;
+  const w = canvas._cssW || canvas.width;
+  const h = canvas._cssH || canvas.height;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   const plotX = WF_LEFT;
   const plotW = Math.max(1, w - WF_LEFT);
@@ -140,14 +143,16 @@ export function drawWaveform(canvas, data, opts = {}) {
 /** Draw a vertical playback cursor at a normalized [0,1] position within the plot. */
 export function drawCursor(canvas, pos, color = '#ff5c5c') {
   const ctx = canvas.getContext('2d');
-  const plotW = canvas.width - WF_LEFT;
+  const dpr = canvas._dpr || 1;
+  const w = canvas._cssW || canvas.width;
+  const h = canvas._cssH || canvas.height;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const plotW = w - WF_LEFT;
   const x = Math.round(WF_LEFT + pos * plotW) + 0.5;
-  ctx.save();
   ctx.strokeStyle = color;
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(x, 0);
-  ctx.lineTo(x, canvas.height - WF_BOTTOM);
+  ctx.lineTo(x, h - WF_BOTTOM);
   ctx.stroke();
-  ctx.restore();
 }

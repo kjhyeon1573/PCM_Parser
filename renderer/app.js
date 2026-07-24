@@ -9,10 +9,10 @@ import { SCALES, scaleForward, scaleInverse, effectiveFMin } from './scales.js';
 import { Player } from './player.js';
 import { encodeWav } from './wav.js';
 
-// Unified panel height for the waveform and spectrogram canvases.
+// Default panel height (per-file, adjustable) for waveform & spectrogram canvases.
 const PANEL_HEIGHT = 200;
-const WF_HEIGHT = PANEL_HEIGHT;
-const SPEC_HEIGHT = PANEL_HEIGHT;
+const MIN_PANEL_HEIGHT = 90;
+const MAX_PANEL_HEIGHT = 520;
 
 // Global spectrogram settings — applied to every spectrogram.
 // `compute`-affecting fields (window/size/overlap) require re-running the STFT;
@@ -32,8 +32,7 @@ const state = {
   files: [],          // see makeFile()
   exportOrder: [],    // [{ fileId, ch }]
   nextId: 1,
-  lastSaveDir: '',    // remembered folder for the save dialog
-  nameEdited: false   // true once the user hand-edits the export filename
+  lastSaveDir: ''     // remembered folder for the save dialog
 };
 
 const player = new Player();          // per-file preview playback
@@ -103,6 +102,7 @@ function makeFile(meta, buffer) {
     stats: [],
     dom: null,
     view: { start: 0, end: 0 }, // per-file zoom window (samples), shared by all channels
+    panelHeight: PANEL_HEIGHT,  // per-file plot height (px), adjustable
     channelDom: []
   };
 }
@@ -123,9 +123,15 @@ function parseFile(file) {
 const filesEl = () => $('#files');
 
 function sizeCanvas(canvas, height) {
-  const w = Math.max(200, canvas.parentElement.clientWidth);
-  canvas.width = w;
-  canvas.height = height;
+  // HiDPI: back the canvas with a device-pixel buffer (dpr× the CSS size) and
+  // remember the logical CSS size + dpr for the drawing code to use.
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = Math.max(200, canvas.parentElement.clientWidth);
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(height * dpr);
+  canvas._cssW = cssW;
+  canvas._cssH = height;
+  canvas._dpr = dpr;
 }
 
 // -------- precise, prompt canvas resizing (window + any layout change) -----
@@ -148,15 +154,15 @@ function flushResize() {
     if (!cd || target.clientWidth < 10) continue;
     const w = Math.max(200, target.clientWidth);
     if (target._kind === 'wf') {
-      if (!wfVisible(cd) || cd.base.width === w) continue; // unchanged/hidden → skip
-      sizeCanvas(cd.base, WF_HEIGHT);
-      sizeCanvas(cd.overlay, WF_HEIGHT);
+      if (!wfVisible(cd) || cd.base._cssW === w) continue; // unchanged/hidden → skip
+      sizeCanvas(cd.base, cd.file.panelHeight);
+      sizeCanvas(cd.overlay, cd.file.panelHeight);
       drawChannelWaveform(cd);
       cursorsDirty = true;
     } else if (target._kind === 'spec') {
-      if (!specVisible(cd) || !cd.matrix || cd.specCanvas.width === w) continue;
-      sizeCanvas(cd.specCanvas, SPEC_HEIGHT);
-      sizeCanvas(cd.specOverlay, SPEC_HEIGHT);
+      if (!specVisible(cd) || !cd.matrix || cd.specCanvas._cssW === w) continue;
+      sizeCanvas(cd.specCanvas, cd.file.panelHeight);
+      sizeCanvas(cd.specOverlay, cd.file.panelHeight);
       ensureSpecImage(cd);   // height fixed → cached; width change → just repaint
       paintChannelSpec(cd);
       cursorsDirty = true;
@@ -190,11 +196,12 @@ function renderFile(file) {
   const info = el('span', { class: 'muted info' });
 
   applyBtn.onclick = () => {
-    // remember each channel's view mode + envelope state so we can restore them
-    const restore = { mode: new Map(), env: new Set() };
+    // remember each channel's view mode + envelope + plot state to restore them
+    const restore = { mode: new Map(), env: new Set(), plotOff: new Set() };
     for (const cd of file.channelDom) {
       restore.mode.set(cd.ch, cd.mode);
       if (cd.envOn) restore.env.add(cd.ch);
+      if (!cd.plotOn) restore.plotOff.add(cd.ch);
     }
     settings.format = formatSel.value;
     settings.channels = Math.max(1, parseInt(chInput.value) || 1);
@@ -236,6 +243,12 @@ function renderFile(file) {
 
   const chWrap = el('div', { class: 'channels' });
   card.appendChild(chWrap);
+
+  // drag the card's bottom edge up/down to resize this file's plots
+  const resizer = el('div', { class: 'card-resizer', title: 'Drag to resize plots' });
+  card.appendChild(resizer);
+  setupCardResize(file, resizer);
+
   card._chWrap = chWrap;
   card._playBtn = playBtn;
   card._timeLabel = timeLabel;
@@ -244,6 +257,51 @@ function renderFile(file) {
   filesEl().appendChild(card);
   rebuildChannels(file, info);
   updateMixNote(file);
+}
+
+/** Count currently-visible plot panels in a file (each waveform/spectrogram = 1). */
+function visiblePanelCount(file) {
+  let n = 0;
+  for (const cd of file.channelDom) {
+    if (wfVisible(cd)) n++;
+    if (specVisible(cd)) n++;
+  }
+  return n;
+}
+
+/** Drag the card's bottom edge to change this file's plot height. */
+function setupCardResize(file, handle) {
+  let drag = null;
+  handle.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0) return;
+    handle.setPointerCapture(ev.pointerId);
+    // Dividing by the number of stacked panels makes the card's bottom edge
+    // (the handle) track the cursor 1:1 even with many channels.
+    drag = { y0: ev.clientY, h0: file.panelHeight, panels: Math.max(1, visiblePanelCount(file)), raf: 0, pending: file.panelHeight };
+    handle.classList.add('active');
+    ev.preventDefault();
+  });
+  handle.addEventListener('pointermove', (ev) => {
+    if (!drag) return;
+    drag.pending = drag.h0 + (ev.clientY - drag.y0) / drag.panels; // drag down → taller
+    if (!drag.raf) {
+      drag.raf = requestAnimationFrame(() => {
+        if (!drag) return;
+        drag.raf = 0;
+        setFilePanelHeight(file, drag.pending);
+      });
+    }
+  });
+  const end = (ev) => {
+    if (!drag) return;
+    if (drag.raf) cancelAnimationFrame(drag.raf);
+    setFilePanelHeight(file, drag.pending);
+    drag = null;
+    handle.classList.remove('active');
+    try { handle.releasePointerCapture(ev.pointerId); } catch (_) {}
+  };
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
 }
 
 /** Show a red note when per-file playback will down-mix >2 checked channels to mono. */
@@ -281,11 +339,13 @@ function rebuildChannels(file, infoSpan, restore = null) {
 
     const restoreMode = restore && restore.mode.get(ch);
     const restoreEnv = restore && restore.env.has(ch);
+    const restorePlotOff = restore && restore.plotOff.has(ch);
 
     requestAnimationFrame(() => {
-      sizeCanvas(cd.base, WF_HEIGHT);
-      sizeCanvas(cd.overlay, WF_HEIGHT);
+      sizeCanvas(cd.base, cd.file.panelHeight);
+      sizeCanvas(cd.overlay, cd.file.panelHeight);
       if (restoreEnv) enableEnvelope(cd, true);
+      if (restorePlotOff) { setPlot(cd, false); return; }
       drawChannelWaveform(cd);
       if (restoreMode && restoreMode !== 'waveform') setChannelMode(cd, restoreMode);
     });
@@ -299,7 +359,11 @@ function buildChannelRow(file, data, ch, chWrap) {
   checkbox.onchange = () => toggleExport(file, ch, checkbox.checked);
   const st = file.stats[ch];
 
-  const head = el('label', { class: 'ch-head' }, [checkbox, el('span', { textContent: ` Ch ${ch}` })]);
+  const plotBtn = el('button', { class: 'btn tiny ghost active plot-toggle', textContent: 'plot', title: 'Show/hide plots for this channel' });
+  const head = el('div', { class: 'ch-head' }, [
+    el('label', { class: 'ch-check' }, [checkbox, el('span', { textContent: ` Ch ${ch}` })]),
+    plotBtn
+  ]);
   const peakLine = el('div', { class: 'ch-stat muted small', textContent: `peak ${st.peak.toFixed(3)}` });
   const rmsLine = el('div', { class: 'ch-stat muted small', textContent: `rms ${st.rms.toFixed(3)}` });
 
@@ -321,6 +385,7 @@ function buildChannelRow(file, data, ch, chWrap) {
   ]);
 
   const wfWrap = el('div', { class: 'wf-wrap' });
+  wfWrap.style.height = file.panelHeight + 'px';
   const base = el('canvas', { class: 'wf-base' });
   const overlay = el('canvas', { class: 'wf-overlay' });
   wfWrap.appendChild(base);
@@ -337,6 +402,7 @@ function buildChannelRow(file, data, ch, chWrap) {
   const specCanvas = el('canvas', { class: 'spec' });
   const specOverlay = el('canvas', { class: 'spec-overlay' });
   const specInner = el('div', { class: 'spec-inner' }, [specCanvas, specOverlay, specStatus]);
+  specInner.style.height = file.panelHeight + 'px';
   const specWrap = el('div', { class: 'spec-wrap hidden' }, [specToolbar, specInner]);
 
   const main = el('div', { class: 'ch-main' }, [wfPanel, specWrap]);
@@ -348,7 +414,9 @@ function buildChannelRow(file, data, ch, chWrap) {
     file, data, ch,
     checkbox, base, overlay, wfWrap, wfPanel, viewLabel,
     specWrap, specInner, specCanvas, specOverlay, specStatus,
-    btnWf, btnSpec, btnBoth, envBtn,
+    btnWf, btnSpec, btnBoth, envBtn, plotBtn,
+    peakLine, rmsLine, modes, main,
+    plotOn: true,
     mode: 'waveform',
     envOn: false, envelope: null, envKey: '',
     ampView: { center: 0, range: 1 },      // waveform vertical (amplitude) view
@@ -357,6 +425,8 @@ function buildChannelRow(file, data, ch, chWrap) {
     specImage: null, specImageKey: ''
   };
 
+  // plot on/off toggle
+  plotBtn.onclick = () => setPlot(cd, !cd.plotOn);
   // view-mode buttons
   btnWf.onclick = () => setChannelMode(cd, 'waveform');
   btnSpec.onclick = () => setChannelMode(cd, 'spectrogram');
@@ -379,10 +449,21 @@ function buildChannelRow(file, data, ch, chWrap) {
 }
 
 // =======================================================================
-// Channel view mode (waveform / spectrogram / both)
+// Channel plot on/off + view mode (waveform / spectrogram / both)
 // =======================================================================
-function specVisible(cd) { return cd.mode === 'spectrogram' || cd.mode === 'both'; }
-function wfVisible(cd) { return cd.mode === 'waveform' || cd.mode === 'both'; }
+function specVisible(cd) { return cd.plotOn && (cd.mode === 'spectrogram' || cd.mode === 'both'); }
+function wfVisible(cd) { return cd.plotOn && (cd.mode === 'waveform' || cd.mode === 'both'); }
+
+/** Toggle a channel's plots. When off, peak/rms, mode buttons and plots hide. */
+function setPlot(cd, on) {
+  cd.plotOn = on;
+  cd.plotBtn.classList.toggle('active', on);
+  cd.peakLine.classList.toggle('hidden', !on);
+  cd.rmsLine.classList.toggle('hidden', !on);
+  cd.modes.classList.toggle('hidden', !on);
+  cd.main.classList.toggle('hidden', !on);
+  if (on) setChannelMode(cd, cd.mode); // re-render the current mode
+}
 
 function setChannelMode(cd, mode) {
   cd.mode = mode;
@@ -395,8 +476,8 @@ function setChannelMode(cd, mode) {
 
   if (wfVisible(cd)) {
     requestAnimationFrame(() => {
-      sizeCanvas(cd.base, WF_HEIGHT);
-      sizeCanvas(cd.overlay, WF_HEIGHT);
+      sizeCanvas(cd.base, cd.file.panelHeight);
+      sizeCanvas(cd.overlay, cd.file.panelHeight);
       drawChannelWaveform(cd);
       drawAllCursors();
     });
@@ -461,6 +542,28 @@ function zoomFile(file, factor, focusFrac = 0.5) {
 function resetZoom(file) {
   file.view = { start: 0, end: file.parsed.frameCount };
   redrawFileViews(file);
+}
+
+/** Adjust the plot height for every channel of a file. */
+function setFilePanelHeight(file, h) {
+  h = Math.max(MIN_PANEL_HEIGHT, Math.min(MAX_PANEL_HEIGHT, h | 0));
+  file.panelHeight = h;
+  for (const cd of file.channelDom) {
+    cd.wfWrap.style.height = h + 'px';
+    cd.specInner.style.height = h + 'px';
+    if (wfVisible(cd)) {
+      sizeCanvas(cd.base, h);
+      sizeCanvas(cd.overlay, h);
+      drawChannelWaveform(cd);
+    }
+    if (specVisible(cd)) {
+      sizeCanvas(cd.specCanvas, h);
+      sizeCanvas(cd.specOverlay, h);
+      ensureSpecImage(cd); // canvasHeight changed → key changes → rebuild
+      paintChannelSpec(cd);
+    }
+  }
+  drawAllCursors();
 }
 
 // ---- amplitude (vertical) zoom/pan — per waveform ----
@@ -680,8 +783,8 @@ function showChannelSpec(cd, recompute) {
   cd.specCanvas.classList.add('dim');
   if (recompute) { cd.matrixKey = ''; cd.specImageKey = ''; }
   setTimeout(() => {
-    sizeCanvas(cd.specCanvas, SPEC_HEIGHT);
-    sizeCanvas(cd.specOverlay, SPEC_HEIGHT);
+    sizeCanvas(cd.specCanvas, cd.file.panelHeight);
+    sizeCanvas(cd.specOverlay, cd.file.panelHeight);
     ensureMatrix(cd);
     ensureSpecImage(cd);
     paintChannelSpec(cd);
@@ -811,7 +914,8 @@ function seekFileSeconds(file, seconds) {
     }
   }
   player.seek(seconds);
-  if (!player.playing) drawAllCursors();
+  if (player.playing) startCursorLoop(); // keep the cursor moving from the new spot
+  else drawAllCursors();
 }
 
 /** Live-update the active file's audio when its checked channels change. */
@@ -879,10 +983,16 @@ function drawAllCursors() {
 function clearCursors() {
   for (const f of state.files) {
     for (const cd of f.channelDom) {
-      cd.overlay.getContext('2d').clearRect(0, 0, cd.overlay.width, cd.overlay.height);
-      if (cd.specOverlay) cd.specOverlay.getContext('2d').clearRect(0, 0, cd.specOverlay.width, cd.specOverlay.height);
+      clearOverlay(cd.overlay);
+      if (cd.specOverlay) clearOverlay(cd.specOverlay);
     }
   }
+}
+
+function clearOverlay(canvas) {
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(1, 0, 0, 1, 0, 0); // clear the raw device buffer
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
 
 // =======================================================================
@@ -1023,10 +1133,9 @@ function updateExportPanel() {
   updatePreviewControls();
   updateAllMixNotes();
 
-  // keep the suggested filename in sync with the channel count
-  // until the user hand-edits it
-  if (!state.nameEdited) {
-    $('#export-name').value = defaultExportName(count);
+  // in auto mode, keep the suggested filename in sync with the channel count
+  if ($('#export-auto').checked) {
+    $('#export-name').value = autoExportName(count);
   }
 
   // sample-rate consistency check
@@ -1103,8 +1212,10 @@ async function doExport() {
     const res = await window.api.saveWav(wav, outName, state.lastSaveDir);
     if (res.saved) {
       state.lastSaveDir = res.dir || state.lastSaveDir;
-      state.nameEdited = true;
-      $('#export-name').value = res.name;
+      // in auto mode, refresh to a new timestamped name; else reflect what was saved
+      $('#export-name').value = $('#export-auto').checked
+        ? autoExportName(channels.length)
+        : res.name;
       setRecentPath(res.path);
       setStatus(`Exported ${channels.length}-channel WAV → ${res.path}`);
     } else {
@@ -1118,14 +1229,22 @@ async function doExport() {
   }
 }
 
-function defaultExportName(count) {
-  return `export_${count}ch.wav`;
+/** Local timestamp like 20260723_204512 for auto file names. */
+function fileTimestamp() {
+  const d = new Date();
+  const p = (n, w = 2) => String(n).padStart(w, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
-/** Current filename from the input, sanitized and guaranteed to end in .wav */
+function autoExportName(count) {
+  return `export_${count}ch_${fileTimestamp()}.wav`;
+}
+
+/** Current filename to save: auto (fresh timestamp) or the manual input value. */
 function currentExportName(count) {
+  if ($('#export-auto').checked) return autoExportName(count);
   let name = ($('#export-name').value || '').trim();
-  if (!name) name = defaultExportName(count);
+  if (!name) name = autoExportName(count);
   if (!/\.wav$/i.test(name)) name += '.wav';
   return name;
 }
@@ -1379,14 +1498,30 @@ window.addEventListener('DOMContentLoaded', () => {
     previewPlayer.seek(pos * d);
     updatePreviewProgress();
   });
+
+  // playback gain (applies to per-file play and the mixed preview)
+  const gainSlider = $('#gain-slider');
+  const applyGain = () => {
+    const g = parseFloat(gainSlider.value);
+    player.setGain(g);
+    previewPlayer.setGain(g);
+    $('#gain-val').textContent = Math.round(g * 100) + '%';
+  };
+  gainSlider.addEventListener('input', applyGain);
+  applyGain();
+
   setupDragAndDrop();
 
-  // track manual edits to the export filename
+  // export filename: auto (timestamped) vs manual
   const nameInput = $('#export-name');
-  nameInput.addEventListener('input', () => {
-    // if the user clears it, fall back to auto-naming again
-    state.nameEdited = nameInput.value.trim() !== '';
-  });
+  const autoChk = $('#export-auto');
+  const applyAuto = () => {
+    nameInput.readOnly = autoChk.checked;
+    nameInput.classList.toggle('readonly', autoChk.checked);
+    if (autoChk.checked) nameInput.value = autoExportName(state.exportOrder.length);
+  };
+  autoChk.addEventListener('change', applyAuto);
+  applyAuto(); // initialize (auto on by default)
 
   // default-format controls
   const df = $('#def-format');

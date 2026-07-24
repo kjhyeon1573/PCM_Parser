@@ -66,15 +66,21 @@
         </div>
         <div id="preview-bar" class="preview-bar"><div id="preview-prog" class="preview-prog"></div></div>
         <div id="preview-info" class="muted small">Select channels to preview</div>
+        <div class="gain-row">
+          <span class="muted small">Gain</span>
+          <input id="gain-slider" type="range" min="0" max="4" step="0.05" value="1" title="Playback gain (applies to file play and preview)" />
+          <span id="gain-val" class="muted small">100%</span>
+        </div>
       </div>
 
       <button id="export-btn" class="btn primary full" disabled>Export WAV</button>
 
       <div class="export-after">
-        <label class="save-row">
+        <div class="save-row">
           <span class="muted small">Save as</span>
-          <input id="export-name" class="fname-input" type="text" spellcheck="false" value="export_0ch.wav" />
-        </label>
+          <label class="auto-label"><input id="export-auto" type="checkbox" checked /> <span class="muted small">auto</span></label>
+        </div>
+        <input id="export-name" class="fname-input" type="text" spellcheck="false" value="export_0ch.wav" />
         <div class="recent-row">
           <span class="muted small">Recent save path</span>
           <div id="export-recent" class="path-box muted small" title="">—</div>

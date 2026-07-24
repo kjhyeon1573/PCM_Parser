@@ -15,11 +15,24 @@ export class Player {
     this.playing = false;
     this.onEnded = null;
     this.ownerId = null;     // which file id currently owns the player
+    this.gain = null;
+    this._gainValue = 1;     // linear output gain
   }
 
   _ensureCtx() {
-    if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (!this.ctx) {
+      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      this.gain = this.ctx.createGain();
+      this.gain.gain.value = this._gainValue;
+      this.gain.connect(this.ctx.destination);
+    }
     return this.ctx;
+  }
+
+  /** Set the linear output gain (1 = unity). Applies immediately. */
+  setGain(v) {
+    this._gainValue = v;
+    if (this.gain) this.gain.gain.value = v;
   }
 
   /** Load deinterleaved Float32 channels at a given sample rate for playback. */
@@ -50,17 +63,19 @@ export class Player {
   }
 
   play() {
-    if (!this.buffer) return;
+    if (!this.buffer || this.playing) return;
     const ctx = this._ensureCtx();
     if (ctx.state === 'suspended') ctx.resume();
-    if (this.playing) return;
     const src = ctx.createBufferSource();
     src.buffer = this.buffer;
-    src.connect(ctx.destination);
+    src.connect(this.gain);
     src.onended = () => {
-      if (this._stopping) return;
+      // Only the CURRENT source may signal a natural end. A source stopped by
+      // pause/seek/stop has been superseded and must not reset state.
+      if (this.source !== src) return;
       this.playing = false;
       this.offset = 0;
+      this.source = null;
       if (this.onEnded) this.onEnded();
     };
     const startOffset = Math.min(this.offset, this.duration);
@@ -94,11 +109,11 @@ export class Player {
 
   _stopSource() {
     if (this.source) {
-      this._stopping = true;
-      try { this.source.stop(); } catch (e) {}
-      try { this.source.disconnect(); } catch (e) {}
-      this.source = null;
-      this._stopping = false;
+      const src = this.source;
+      this.source = null;          // clear first so the onended guard ignores it
+      src.onended = null;          // and detach the handler entirely
+      try { src.stop(); } catch (e) {}
+      try { src.disconnect(); } catch (e) {}
     }
   }
 }
