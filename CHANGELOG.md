@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-07-24
+
+### Added
+- **Hover bar**: a light vertical line follows the cursor over a waveform or
+  spectrogram for easier targeting (alongside the red playback cursor).
+- **Magnetic snap**: when the "Snap to other track's range" option is on, the
+  hover bar snaps to a nearby selection edge, and the edge grab radius widens,
+  so selection edges are easier to hit.
+
+[1.3.1]: https://github.com/kjhyeon1573/PCM_Parser/releases/tag/v1.3.1
+
 ## [1.3.0] - 2026-07-24
 
 ### Added

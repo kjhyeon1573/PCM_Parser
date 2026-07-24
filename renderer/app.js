@@ -652,9 +652,9 @@ function attachAxisInteraction(wrapEl, cfg) {
     if (overAxis) { drag.mode = 'axis'; drag.ctx = cfg.dragStart ? cfg.dragStart() : null; return; }
 
     const frac = (ev.clientX - rect.left - cfg.gutter) / width;
-    // grab a selection edge if the pointer is near one
+    // grab a selection edge if the pointer is near one (wider magnet when snap on)
     const edges = cfg.selectionFracs ? cfg.selectionFracs() : null;
-    const edgeFrac = EDGE_PX / width;
+    const edgeFrac = (state.snapEnabled ? MAG_PX : EDGE_PX) / width;
     let mode = null, startFrac = frac;
     if (edges && cfg.onSelect) {
       if (Math.abs(frac - edges[0]) <= edgeFrac) { mode = 'select'; startFrac = edges[1]; }      // left edge → right fixed
@@ -670,16 +670,18 @@ function attachAxisInteraction(wrapEl, cfg) {
 
   wrapEl.addEventListener('pointermove', (ev) => {
     if (!drag) {
-      // hover: show a resize cursor when near a selection edge
+      const rect = wrapEl.getBoundingClientRect();
+      const width = Math.max(1, rect.width - cfg.gutter);
+      const frac = (ev.clientX - rect.left - cfg.gutter) / width;
+      // resize cursor when near a selection edge
       if (cfg.selectionFracs) {
-        const rect = wrapEl.getBoundingClientRect();
-        const width = Math.max(1, rect.width - cfg.gutter);
-        const frac = (ev.clientX - rect.left - cfg.gutter) / width;
         const edges = cfg.selectionFracs();
+        const grab = (state.snapEnabled ? MAG_PX : EDGE_PX) / width;
         const near = edges && frac >= 0 &&
-          (Math.abs(frac - edges[0]) <= EDGE_PX / width || Math.abs(frac - edges[1]) <= EDGE_PX / width);
+          (Math.abs(frac - edges[0]) <= grab || Math.abs(frac - edges[1]) <= grab);
         wrapEl.style.cursor = near ? 'ew-resize' : '';
       }
+      if (cfg.onHover) cfg.onHover(frac); // update the hover bar
       return;
     }
     const dx = ev.clientX - drag.x0, dy = ev.clientY - drag.y0;
@@ -710,6 +712,7 @@ function attachAxisInteraction(wrapEl, cfg) {
   };
   wrapEl.addEventListener('pointerup', endDrag);
   wrapEl.addEventListener('pointercancel', () => { drag = null; });
+  wrapEl.addEventListener('pointerleave', () => { if (cfg.onHoverLeave) cfg.onHoverLeave(); });
 }
 
 /** The file's selection edges as fractions of the current view (or null). */
@@ -744,6 +747,8 @@ function setupWaveformInteraction(cd) {
     onAxisPan: (dyFrac, ctx) => panAmp(cd, ctx.center0, dyFrac, cd.ampView.range),
     onSelect: (a, b, done) => selectionFromFracs(file, a, b, done),
     selectionFracs: () => selectionFracsOf(file),
+    onHover: (frac) => setHover(cd, 'wf', frac),
+    onHoverLeave: () => clearHoverOn(cd, 'wf'),
     onClick: (frac) => {
       const v = file.view;
       const sample = v.start + frac * (v.end - v.start);
@@ -768,6 +773,8 @@ function setupSpecInteraction(cd) {
     onAxisPan: (dyFrac, ctx) => panFreq(cd, ctx.freq0, dyFrac),
     onSelect: (a, b, done) => selectionFromFracs(file, a, b, done),
     selectionFracs: () => selectionFracsOf(file),
+    onHover: (frac) => setHover(cd, 'spec', frac),
+    onHoverLeave: () => clearHoverOn(cd, 'spec'),
     onClick: (frac) => {   // click on the spectrogram seeks like the waveform
       const v = file.view;
       const sample = v.start + frac * (v.end - v.start);
@@ -1181,20 +1188,67 @@ function startCursorLoop() {
   cursorRAF = requestAnimationFrame(tick);
 }
 
+// hover indicator (light vertical bar following the mouse)
+let hover = { cd: null, kind: null, frac: -1 };
+
+/** Playhead position as a fraction of the file's current view, or -1 if hidden. */
+function playbackFrac(file) {
+  if (activeFileId !== file.id || !file.parsed) return -1;
+  const sr = file.settings.sampleRate;
+  const cur = player.currentTime * sr;
+  const v = file.view;
+  const len = v.end - v.start;
+  if (len <= 0) return -1;
+  return (cur - v.start) / len;
+}
+
+/** Repaint one overlay: playback cursor (red) + hover bar (light white). */
+function paintOverlay(cd, kind) {
+  const canvas = kind === 'wf' ? cd.overlay : cd.specOverlay;
+  if (!canvas || !canvas.width) return;
+  clearOverlay(canvas);
+  const pos = playbackFrac(cd.file);
+  if (pos >= 0 && pos <= 1) drawCursor(canvas, pos, '#ff5c5c');
+  if (hover.cd === cd && hover.kind === kind && hover.frac >= 0 && hover.frac <= 1) {
+    drawCursor(canvas, hover.frac, 'rgba(255,255,255,0.5)');
+  }
+}
+
 function drawAllCursors() {
   const f = state.files.find((x) => x.id === activeFileId);
   if (!f || !f.parsed) return;
-  clearCursors();
-  const sr = f.settings.sampleRate;
-  const curSample = player.currentTime * sr;
-  const v = f.view;
-  const len = v.end - v.start;
-  if (len <= 0) return;
-  const pos = (curSample - v.start) / len; // map to the current zoom window
-  if (pos < 0 || pos > 1) return;           // playhead outside the visible range
   for (const cd of f.channelDom) {
-    if (wfVisible(cd)) drawCursor(cd.overlay, pos);
-    if (specVisible(cd) && cd.specOverlay.width) drawCursor(cd.specOverlay, pos);
+    if (wfVisible(cd)) paintOverlay(cd, 'wf');
+    if (specVisible(cd)) paintOverlay(cd, 'spec');
+  }
+}
+
+const MAG_PX = 10; // magnetic pull distance to a selection edge (px)
+
+/** Update the hover bar for a plot; magnet-snap to a selection edge when enabled. */
+function setHover(cd, kind, rawFrac) {
+  if (rawFrac < 0 || rawFrac > 1) { clearHoverOn(cd, kind); return; }
+  let frac = rawFrac;
+  if (state.snapEnabled && cd.file.selection) {
+    const edges = selectionFracsOf(cd.file);
+    if (edges) {
+      const canvas = kind === 'wf' ? cd.overlay : cd.specOverlay;
+      const plotW = Math.max(1, (canvas._cssW || canvas.width) - 46);
+      const mag = MAG_PX / plotW;
+      if (Math.abs(rawFrac - edges[0]) <= mag) frac = edges[0];
+      else if (Math.abs(rawFrac - edges[1]) <= mag) frac = edges[1];
+    }
+  }
+  const prev = hover;
+  hover = { cd, kind, frac };
+  if (prev.cd && (prev.cd !== cd || prev.kind !== kind)) paintOverlay(prev.cd, prev.kind);
+  paintOverlay(cd, kind);
+}
+
+function clearHoverOn(cd, kind) {
+  if (hover.cd === cd && hover.kind === kind) {
+    hover = { cd: null, kind: null, frac: -1 };
+    paintOverlay(cd, kind);
   }
 }
 
